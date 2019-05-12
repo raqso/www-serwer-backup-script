@@ -1,0 +1,27 @@
+#!/bin/bash
+# Configuration file for backup script
+#
+# Number of backups which should not be removed
+DAYS=7
+
+# Backups directory:
+BACKUPS_DIRECTORY='/media/backups'
+
+# Directory to backup:
+WWW_DIRECTORY='/var/www/html'
+
+# Name of MySQL database to backup:
+DATABASE=''
+
+# MYSQL user:
+USER=''
+
+# MySQL password:
+PASS=''
+
+# Google Drive directory id
+GDRIVE_DIRECTORY=''
+
+# Client Id and Client secret to access the APIs which can be generated at google console: https://console.developers.google.com
+CLIENT_ID=''
+CLIENT_SECRET=''
