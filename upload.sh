@@ -218,6 +218,19 @@ function deleteFile(){
 	fi
 }
 
+# Method to clear trash on google drive. Requires 1 argument - access token.
+function clearTrash(){
+	ACCESS_TOKEN="$1"
+
+	# Curl command to clear google drive trash.
+	log "Clearing google drive trash..."
+	curl \
+	-X DELETE \
+	-H "Authorization: Bearer ${ACCESS_TOKEN}" \
+	"https://www.googleapis.com/drive/v2/files/trash" \
+		$curl_args
+}
+
 # Method to find id of a file from google drive. Requires 2 arguments filename id and access token.
 function findId(){
 
@@ -315,6 +328,9 @@ findId "$ACCESS_TOKEN"
 
 # Executing function which will delete the old backup file
 deleteFile "$ACCESS_TOKEN"
+
+# Executing function which will clear user trash on Google Drive
+clearTrash "$ACCESS_TOKEN"
 
 # Check whether the given file argument is valid and check whether the argument is file or directory.
 # based on the type, if the argument is directory do a recursive upload.
