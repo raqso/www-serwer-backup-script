@@ -17,6 +17,10 @@ It could be used to automate the process of making backups of your www files and
 ```
 sh backup.sh
 ```
+by default it's not in verbose mode, to enable this add the `-v` flag
+```
+sh backup.sh -v
+```
 3) Before sending backup file to google drive, you should be prompt once to auth. Please follow tips from the terminal.
 
 
