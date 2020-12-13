@@ -11,16 +11,16 @@ BACKUPS_DIRECTORY='/media/backups'
 WWW_DIRECTORY='/var/www/html'
 
 # Name of MySQL database to backup:
-DATABASE_HOST='localhost'
+DB_HOST='localhost'
 
 # Name of MySQL database to backup:
-DATABASE=''
+DB_NAME=''
 
 # MYSQL user:
-USER=''
+DB_USER=''
 
 # MySQL password:
-PASS=''
+DB_PASS=''
 
 # Google Drive directory id
 GDRIVE_DIRECTORY=''
