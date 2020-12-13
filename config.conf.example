@@ -11,6 +11,9 @@ BACKUPS_DIRECTORY='/media/backups'
 WWW_DIRECTORY='/var/www/html'
 
 # Name of MySQL database to backup:
+DATABASE_HOST='localhost'
+
+# Name of MySQL database to backup:
 DATABASE=''
 
 # MYSQL user:

@@ -34,7 +34,7 @@ fi
 tar cp`if [ "$VERBOSE" = true ]; then echo "v"; fi`fP $BACKUPS_DIRECTORY/www.tar $WWW_DIRECTORY
 log "[1] Home directory packed..."
 
-mysqldump $DATABASE -u$USER -p$PASS > $BACKUPS_DIRECTORY/$DATABASE.sql
+mysqldump $DATABASE -h$DATABASE_HOST -u$USER -p$PASS > $BACKUPS_DIRECTORY/$DATABASE.sql
 log "[2] Database file downloaded..."
 
 env GZIP=-9 tar cf`if [ "$VERBOSE" = true ]; then echo "v"; fi`z $BACKUPS_DIRECTORY/$CURRENT_BACKUP.gz $BACKUPS_DIRECTORY/www.tar $BACKUPS_DIRECTORY/$DATABASE.sql
