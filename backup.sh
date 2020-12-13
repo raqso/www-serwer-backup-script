@@ -34,13 +34,13 @@ fi
 tar cp`if [ "$VERBOSE" = true ]; then echo "v"; fi`fP $BACKUPS_DIRECTORY/www.tar $WWW_DIRECTORY
 log "[1] Home directory packed..."
 
-mysqldump $DATABASE -u$USER -p$PASS > $BACKUPS_DIRECTORY/$DATABASE.sql
+mysqldump $DB_NAME -h$DB_HOST -u$DB_USER -p$DB_PASS > $BACKUPS_DIRECTORY/$DB_NAME.sql
 log "[2] Database file downloaded..."
 
-env GZIP=-9 tar cf`if [ "$VERBOSE" = true ]; then echo "v"; fi`z $BACKUPS_DIRECTORY/$CURRENT_BACKUP.gz $BACKUPS_DIRECTORY/www.tar $BACKUPS_DIRECTORY/$DATABASE.sql
+env GZIP=-9 tar cf`if [ "$VERBOSE" = true ]; then echo "v"; fi`z $BACKUPS_DIRECTORY/$CURRENT_BACKUP.gz $BACKUPS_DIRECTORY/www.tar $BACKUPS_DIRECTORY/$DB_NAME.sql
 log "[3] Database file compressed..."
 
-rm $BACKUPS_DIRECTORY/www.tar $BACKUPS_DIRECTORY/$DATABASE.sql
+rm $BACKUPS_DIRECTORY/www.tar $BACKUPS_DIRECTORY/$DB_NAME.sql
 log "[3] Files and database packed into one archive..."
 
 ./upload.sh -v -r $GDRIVE_DIRECTORY $BACKUPS_DIRECTORY/$CURRENT_BACKUP.gz
