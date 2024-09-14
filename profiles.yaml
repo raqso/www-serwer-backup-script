@@ -1,0 +1,47 @@
+# yaml-language-server: $schema=https://creativeprojects.github.io/resticprofile/jsonschema/config-1.json
+
+groups:
+  full:
+    - database
+    - www
+
+default:
+  repository: $LOCAL_BACKUPS_PATH
+  initialize: true
+  password-file: ./password-file
+  compression: max
+
+  backup:
+    check-after: true
+
+  retention:
+    keep-daily: 7
+    keep-weekly: 4
+    keep-monthly: 12
+    prune: true
+
+database:
+  inherit: default
+
+  backup:
+    stdin: true
+    stdin-command: "mysqldump -u$DB_USER -p$DB_PASS -h$DB_HOST $DB_NAME"
+    stdin-filename: "database_dump.sql"
+    tag:
+      - db
+
+www:
+  inherit: default
+
+  backup:
+    source:
+      - $DIRECTORY_TO_BACKUP
+    exclude:
+      - "$DIRECTORY_TO_BACKUP/cache"
+      - "$DIRECTORY_TO_BACKUP/log"
+      - "$DIRECTORY_TO_BACKUP/tmp"
+      - "$DIRECTORY_TO_BACKUP/img/tmp"
+      - "$DIRECTORY_TO_BACKUP/img/**/*_default.jpg"
+    tag:
+      - www
+    run-after: rclone sync $LOCAL_BACKUPS_PATH $RCLONE_REMOTE_NAME --log-file=/tmp/rclone.log  --log-level INFO
