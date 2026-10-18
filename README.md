@@ -37,3 +37,13 @@ rclone config
 ```
 
 You can add this to cron or run manually when needed.
+
+## Development
+
+Shell scripts are linted with [shellcheck](https://www.shellcheck.net/) via [scripts/shellcheck.sh](./scripts/shellcheck.sh). Enable the versioned pre-commit hook once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+The hook requires `shellcheck` installed locally (`brew install shellcheck` or `sudo apt-get install shellcheck`). GitHub Actions runs the same script on every push and pull request.

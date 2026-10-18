@@ -1,0 +1,3 @@
+#!/bin/bash
+# Enable with: git config core.hooksPath .githooks
+exec "$(git rev-parse --show-toplevel)/scripts/shellcheck.sh"
