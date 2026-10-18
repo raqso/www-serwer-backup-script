@@ -73,7 +73,8 @@ If no backup is running (e.g. a previous run was killed), remove that directory.
   trap 'rmdir backup.lock.d' EXIT
 fi
 
-LOG_FILE="logs/backup-$(date +%Y%m%d-%H%M%S).log"
+# The PID keeps the names of two runs started in the same second apart.
+LOG_FILE="logs/backup-$(date +%Y%m%d-%H%M%S)-$$.log"
 : >"$LOG_FILE" || exit 1
 find logs -name 'backup-*.log' -mtime +30 -delete
 
@@ -108,10 +109,16 @@ if [ -z "${remote_path//\//}" ]; then
 The folder is mirrored, so files in it that are not part of the backup get deleted; use a dedicated folder, never the remote root."
 fi
 
+bwlimit=()
+if [ -n "$RCLONE_BWLIMIT" ]; then
+  bwlimit=(--bwlimit "$RCLONE_BWLIMIT")
+  # Parses the value without touching any remote, so a typo fails before any work is done.
+  error=$(rclone "${bwlimit[@]}" version 2>&1 >/dev/null) ||
+    die "RCLONE_BWLIMIT is not a valid rclone --bwlimit value (e.g. '10M'): ${error%%$'\n'*}"
+fi
+
 export DB_USER DB_PASS DB_HOST DB_NAME
 export DIRECTORY_TO_BACKUP LOCAL_BACKUPS_PATH RCLONE_REMOTE_NAME
-# rclone also reads RCLONE_BWLIMIT from the environment and fails when it is empty.
-if [ -n "$RCLONE_BWLIMIT" ]; then export RCLONE_BWLIMIT; else unset RCLONE_BWLIMIT; fi
 
 # resticprofile creates a new empty repository when none exists locally, and the
 # following 'rclone sync' would then replace the backup history in the cloud with it.
@@ -134,19 +141,38 @@ Restore the local copy first, then run the backup again:
   log "No repository found, a new one will be created."
 fi
 
-# Profiles run one by one (not as a resticprofile group) so a failing database dump
-# does not stop the files backup and the cloud upload (run-after of 'www'), while the
-# run still ends with an error.
+# Low CPU priority (nice 15) so the backup gives way to the website; restic, mysqldump and
+# rclone inherit it, and Linux derives their disk priority from it. Set per command, so
+# the shell that started this script keeps its priority.
+low_priority=()
+command -v nice >/dev/null 2>&1 && low_priority=(nice -n 15)
+
 failed=""
-for profile in database www; do
-  log "Starting backup of '$profile'..."
+# step <name> <description> <command...>: a failed step is reported with the end of its
+# output and makes the run fail at the end, but the following steps still run.
+function step() {
+  local name="$1" description="$2" start
+  shift 2
+  log "$description..."
   start=$(wc -l <"$LOG_FILE")
-  if ! run resticprofile --name "$profile" backup; then
-    failed+=" $profile"
-    echo "ERROR: Backup of '$profile' failed. Last lines of its output (full log: $PWD/$LOG_FILE):" >&2
-    tail -n +"$((start + 1))" "$LOG_FILE" | tail -n 30 >&2
-  fi
-done
+  run "${low_priority[@]}" "$@" && return 0
+  failed+=" $name"
+  echo "ERROR: $description failed. Last lines of its output (full log: $PWD/$LOG_FILE):" >&2
+  tail -n +"$((start + 1))" "$LOG_FILE" | tail -n 30 >&2
+  return 1
+}
+
+# A failing database dump must not stop the files backup, and a failing backup must not
+# stop the retention policy (otherwise the repository grows until the quota is full).
+step database "Backup of 'database'" resticprofile --name database backup
+step www "Backup of 'www'" resticprofile --name www backup
+step forget "Removing old snapshots" resticprofile --name maintenance forget
+# Never mirror a damaged repository over the good copy in the cloud.
+if step check "Repository check" resticprofile --name maintenance check; then
+  step upload "Upload" rclone sync "$LOCAL_BACKUPS_PATH" "$RCLONE_REMOTE_NAME" --log-level INFO "${bwlimit[@]}"
+else
+  echo "ERROR: Not uploading to $RCLONE_REMOTE_NAME, so the copy there is not replaced by a damaged repository." | tee -a "$LOG_FILE" >&2
+fi
 [ -z "$failed" ] || die "Backup failed for:$failed"
 
 log "Backup completed successfully!"

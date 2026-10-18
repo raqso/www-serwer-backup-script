@@ -1,11 +1,5 @@
 # yaml-language-server: $schema=https://creativeprojects.github.io/resticprofile/jsonschema/config-1.json
 
-global:
-  # nice 15 for resticprofile and everything it starts (restic, mysqldump, rclone),
-  # so the backup gives way to the website. Linux derives the disk priority from it
-  # (best-effort, lowest level), so 'ionice' is not needed.
-  priority: background
-
 default:
   repository: $LOCAL_BACKUPS_PATH
   initialize: true
@@ -27,8 +21,6 @@ database:
     tag:
       - db
 
-# Runs after 'database' (see backup.sh), so the repository-wide work happens once per run:
-# retention for both profiles, prune and check, then the upload.
 www:
   inherit: default
 
@@ -43,17 +35,16 @@ www:
       - "$DIRECTORY_TO_BACKUP/img/**/*_default.jpg"
     tag:
       - www
-    # Reads the repository structure, not the file contents (no --read-data).
-    check-after: true
-    run-after: rclone sync "$LOCAL_BACKUPS_PATH" "$RCLONE_REMOTE_NAME" --log-level INFO ${RCLONE_BWLIMIT:+--bwlimit "$RCLONE_BWLIMIT"}
 
-  retention:
-    # Without this, version 1 of the resticprofile config never applies the policy below.
-    after-backup: true
-    # No --path filter: the policy covers the database snapshots too. restic groups
-    # snapshots by host and paths, so www and database are kept separately and the
-    # latest snapshot of each is always kept.
-    path: false
+# Repository-wide work, run once by backup.sh after both backups ('forget', then 'check').
+maintenance:
+  inherit: default
+  initialize: false
+
+  # No --path or --tag filter: covers the database and www snapshots. restic groups
+  # snapshots by host and paths, so the two are kept separately and the latest
+  # snapshot of each is always kept.
+  forget:
     keep-daily: 7
     keep-weekly: 4
     keep-monthly: 12
