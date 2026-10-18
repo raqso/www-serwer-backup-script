@@ -1,2 +1,5 @@
 config.conf
 password-file
+logs/
+backup.lock
+backup.lock.d/

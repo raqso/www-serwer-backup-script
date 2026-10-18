@@ -1,14 +1,37 @@
 #!/bin/bash
+# Usage: ./backup.sh [-v|--verbose]
+# Without -v a successful run prints nothing (cron sends no mail); the full output
+# of every run is kept in logs/. Failures print an ERROR and the end of the log to stderr.
 
 VERBOSE=false
+LOG_FILE=""
 
-export PATH=$PATH:$HOME/bin
+# Prefer the tools installed by installation.sh over older system-wide ones.
+export PATH="$HOME/bin:$PATH"
 
-case "$1" in
--v | --verbose) VERBOSE=true ;;
-esac
+function usage() {
+  echo "Usage: $0 [-v|--verbose] [-h|--help]
+  -v, --verbose  show the backup output (it is always written to logs/)
+  -h, --help     show this help"
+}
+
+for arg in "$@"; do
+  case "$arg" in
+  -v | --verbose) VERBOSE=true ;;
+  -h | --help)
+    usage
+    exit 0
+    ;;
+  *)
+    echo "Unknown argument: $arg" >&2
+    usage >&2
+    exit 2
+    ;;
+  esac
+done
 
 function log() {
+  [ -n "$LOG_FILE" ] && echo -e "${1}" >>"$LOG_FILE"
   if [ "$VERBOSE" = true ]; then
     echo -e "${1}"
   fi
@@ -16,11 +39,43 @@ function log() {
 
 # Errors always go to stderr (cron mails them), regardless of --verbose.
 function die() {
+  [ -n "$LOG_FILE" ] && echo "ERROR: ${1}" >>"$LOG_FILE"
   echo "ERROR: ${1}" >&2
   exit 1
 }
 
+# Runs a command with its output appended to the log (and shown on the terminal with -v).
+function run() {
+  if [ "$VERBOSE" = true ]; then
+    "$@" 2>&1 | tee -a "$LOG_FILE"
+    return "${PIPESTATUS[0]}"
+  fi
+  "$@" >>"$LOG_FILE" 2>&1
+}
+
 cd "$(dirname "$0")" || exit 1
+
+# Logs and the lock may contain paths and hostnames: keep them private to this user.
+umask 077
+mkdir -p logs || exit 1
+
+# One backup at a time: a second run (cron or manual) must not touch the repositories
+# while restic prune or 'rclone sync' of the first one is still working.
+# flock is released by the kernel when the run (and every child it started) ends, so a
+# killed run never leaves a stale lock. Without flock, fall back to an atomic mkdir.
+if command -v flock >/dev/null 2>&1; then
+  exec 9>>backup.lock || exit 1
+  flock -n 9 || die "Another backup is already running (lock held on $PWD/backup.lock)."
+else
+  # ponytail: a killed run leaves the directory behind; it is reported, not removed automatically.
+  mkdir backup.lock.d 2>/dev/null || die "Another backup is already running (lock directory $PWD/backup.lock.d exists).
+If no backup is running (e.g. a previous run was killed), remove that directory."
+  trap 'rmdir backup.lock.d' EXIT
+fi
+
+LOG_FILE="logs/backup-$(date +%Y%m%d-%H%M%S).log"
+: >"$LOG_FILE" || exit 1
+find logs -name 'backup-*.log' -mtime +30 -delete
 
 if [ -f config.conf ]; then
   # shellcheck source=config.conf.example
@@ -77,10 +132,20 @@ Restore the local copy first, then run the backup again:
   log "No repository found, a new one will be created."
 fi
 
-log "Starting backup process..."
-if ! resticprofile --name "full" backup; then
-  die "Error during backup with Restic!"
-fi
+# Profiles run one by one (not as a resticprofile group) so a failing database dump
+# does not stop the files backup and the cloud upload (run-after of 'www'), while the
+# run still ends with an error.
+failed=""
+for profile in database www; do
+  log "Starting backup of '$profile'..."
+  start=$(wc -l <"$LOG_FILE")
+  if ! run resticprofile --name "$profile" backup; then
+    failed+=" $profile"
+    echo "ERROR: Backup of '$profile' failed. Last lines of its output (full log: $PWD/$LOG_FILE):" >&2
+    tail -n +"$((start + 1))" "$LOG_FILE" | tail -n 30 >&2
+  fi
+done
+[ -z "$failed" ] || die "Backup failed for:$failed"
 
 log "Backup completed successfully!"
 exit 0

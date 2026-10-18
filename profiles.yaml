@@ -1,10 +1,5 @@
 # yaml-language-server: $schema=https://creativeprojects.github.io/resticprofile/jsonschema/config-1.json
 
-groups:
-  full:
-    - database
-    - www
-
 default:
   repository: $LOCAL_BACKUPS_PATH
   initialize: true
@@ -47,4 +42,4 @@ www:
       - "$DIRECTORY_TO_BACKUP/img/**/*_default.jpg"
     tag:
       - www
-    run-after: rclone sync "$LOCAL_BACKUPS_PATH" "$RCLONE_REMOTE_NAME" --log-file=/tmp/rclone.log --log-level INFO
+    run-after: rclone sync "$LOCAL_BACKUPS_PATH" "$RCLONE_REMOTE_NAME" --log-level INFO

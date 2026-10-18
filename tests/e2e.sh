@@ -116,8 +116,8 @@ ${1:-}
 EOF"
 }
 
-# Minimal environment, like cron.
-run_backup() { as_tester "env -i HOME=$HOME_DIR PATH=/usr/bin:/bin bash backup.sh $*"; }
+# Minimal environment, like cron. Runs ./backup.sh directly, so it also checks the exec bit.
+run_backup() { as_tester "env -i HOME=$HOME_DIR PATH=${TEST_PATH:-/usr/bin:/bin} ./backup.sh $*"; }
 
 # expect_backup_failure <grep -E pattern>: backup.sh (without -v) must fail with the pattern on stderr.
 expect_backup_failure() {
@@ -237,6 +237,75 @@ scenario_invalid_config_rejected() {
   return "$rc"
 }
 
+scenario_unknown_argument_rejected() {
+  local out rc
+  out=$(run_backup "--bogus 2>&1")
+  rc=$?
+  [ "$rc" = 2 ] || { echo "expected exit code 2, got $rc: $out"; return 1; }
+  grep -q 'Unknown argument: --bogus' <<<"$out" || { echo "unknown argument not named: $out"; return 1; }
+  grep -q 'Usage:' <<<"$out" || { echo "no usage: $out"; return 1; }
+  run_backup "--help" | grep -q 'Usage:' || { echo "--help shows no usage"; return 1; }
+}
+
+# Cron mails any output, so a successful run without -v must be silent; the output goes to logs/.
+scenario_quiet_success_logs_privately() {
+  local out err
+  as_tester "test ! -e /tmp/rclone.log" || { echo "/tmp/rclone.log exists before the run"; return 1; }
+  out=$(run_backup "2>$HOME_DIR/stderr") || { echo "backup.sh failed"; as_tester "cat $HOME_DIR/stderr"; return 1; }
+  err=$(as_tester "cat $HOME_DIR/stderr; rm $HOME_DIR/stderr")
+  [ -z "$out$err" ] || { echo "expected no output, got stdout: '$out' stderr: '$err'"; return 1; }
+  local log
+  log=$(as_tester "ls -t logs/backup-*.log | head -n 1") || return 1
+  echo "log: $log"
+  [ "$(as_tester "stat -c %a logs $log")" = $'700\n600' ] || { echo "logs/ must be 700 and the log 600"; return 1; }
+  as_tester "grep -q 'snapshot .* saved' $log" || { echo "log has no restic output"; return 1; }
+  as_tester "test ! -e /tmp/rclone.log" || { echo "/tmp/rclone.log was written"; return 1; }
+}
+
+# A run must not start while another one holds the lock, and must not touch the repositories.
+scenario_concurrent_run_rejected() {
+  local before
+  before=$(repos_fingerprint) || return 1
+  docker exec -d -u tester -w "$APP_DIR" "$APP" flock backup.lock sleep 300 || return 1
+  local i
+  for i in $(seq 20); do
+    as_tester "! flock -n backup.lock true" && break
+    sleep 0.5
+  done
+  expect_backup_failure "Another backup is already running" || { as_tester "pkill -u tester -x sleep"; return 1; }
+  as_tester "pkill -u tester -x sleep" || return 1
+  [ "$(repos_fingerprint)" = "$before" ] || { echo "repositories changed"; return 1; }
+
+  log "Without flock: mkdir fallback"
+  as_tester "mkdir -p $HOME_DIR/noflock && ln -sf /usr/bin/* $HOME_DIR/noflock/ && rm $HOME_DIR/noflock/flock" || return 1
+  as_tester "mkdir backup.lock.d" || return 1
+  TEST_PATH="$HOME_DIR/noflock" expect_backup_failure "lock directory .*backup.lock.d exists" || return 1
+  [ "$(repos_fingerprint)" = "$before" ] || { echo "repositories changed"; return 1; }
+  as_tester "rmdir backup.lock.d" || return 1
+  TEST_PATH="$HOME_DIR/noflock" run_backup || return 1
+  as_tester "test ! -e backup.lock.d" || { echo "lock directory left behind"; return 1; }
+  run_backup || { echo "backup after the lock was released failed"; return 1; }
+}
+
+# A failing database dump must not stop the files backup and the cloud upload, but the run fails.
+scenario_db_failure_still_backs_up_files() {
+  local www_before db_before www_after db_after err rc=0
+  www_before=$(as_tester "$RESTIC -r $CLOUD_REPO snapshots --tag www --json" | grep -o '"id":"[^"]*"' | sort) || return 1
+  db_before=$(as_tester "$RESTIC -r $CLOUD_REPO snapshots --tag db --json" | grep -o '"id":"[^"]*"' | sort) || return 1
+  write_config "DB_PASS='wrongpass'" || return 1
+  err=$(expect_backup_failure "ERROR: Backup of 'database' failed") || rc=1
+  echo "$err"
+  grep -q "Access denied" <<<"$err" || { echo "stderr has no log tail with the dump error"; rc=1; }
+  grep -q "ERROR: Backup failed for: database$" <<<"$err" || { echo "no final ERROR line"; rc=1; }
+  write_config || return 1
+  www_after=$(as_tester "$RESTIC -r $CLOUD_REPO snapshots --tag www --json" | grep -o '"id":"[^"]*"' | sort) || return 1
+  db_after=$(as_tester "$RESTIC -r $CLOUD_REPO snapshots --tag db --json" | grep -o '"id":"[^"]*"' | sort) || return 1
+  echo "www snapshots in cloud: before=$(grep -c . <<<"$www_before") after=$(grep -c . <<<"$www_after")"
+  [ -n "$(comm -13 <(echo "$www_before") <(echo "$www_after"))" ] || { echo "no new www snapshot in cloud"; rc=1; }
+  [ "$db_before" = "$db_after" ] || { echo "db snapshots changed after a failed dump"; rc=1; }
+  return "$rc"
+}
+
 # run_scenario <function> [known-bug]
 # Scenarios run in order and share container state.
 # A known-bug scenario that fails is reported as XFAIL and does not fail the run;
@@ -268,6 +337,10 @@ run_scenario scenario_restore_from_cloud
 run_scenario scenario_invalid_remote_name_rejected
 run_scenario scenario_invalid_config_rejected
 run_scenario scenario_missing_local_repo_keeps_cloud_history
+run_scenario scenario_unknown_argument_rejected
+run_scenario scenario_quiet_success_logs_privately
+run_scenario scenario_concurrent_run_rejected
+run_scenario scenario_db_failure_still_backs_up_files
 printf '\n%s' "$SUMMARY"
 echo "Finished in $((SECONDS - START))s"
 exit "$FAILED"
