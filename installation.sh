@@ -22,10 +22,17 @@ mkdir -p "$BIN_DIR"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
-# Prints the download URL of the latest GitHub release asset of repo $1 matching pattern $2.
+# Reads GitHub release JSON (pretty-printed or minified) on stdin and prints the first
+# browser_download_url whose file name fully matches the extended regex $1.
+extract_asset_url() {
+  grep -oE '"browser_download_url": *"[^"]*/'"$1"'"' | head -n 1 | cut -d '"' -f 4
+}
+
+# Prints the download URL of the latest GitHub release asset of repo $1 whose file name
+# matches the extended regex $2.
 latest_release_url() {
   local url
-  url=$(curl -fsSL "https://api.github.com/repos/$1/releases/latest" | grep "browser_download_url.*$2" | head -n 1 | cut -d '"' -f 4) || true
+  url=$(curl -fsSL -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$1/releases/latest" | extract_asset_url "$2") || true
   if [ -z "$url" ]; then
     echo "Error: could not get the latest $1 release URL from GitHub (network problem or API rate limit). Try again later." >&2
     exit 1
@@ -39,7 +46,7 @@ if command -v restic >/dev/null 2>&1; then
   restic self-update || echo "Warning: restic self-update failed, keeping the current version." >&2
 else
   echo "Installing restic..."
-  restic_url=$(latest_release_url restic/restic "linux_amd64.bz2")
+  restic_url=$(latest_release_url restic/restic 'restic_[0-9.]+_linux_amd64\.bz2')
   curl -fsSL "$restic_url" -o "$TMP_DIR/restic.bz2"
   bzip2 -d "$TMP_DIR/restic.bz2"
   chmod +x "$TMP_DIR/restic"
@@ -53,7 +60,7 @@ if command -v resticprofile >/dev/null 2>&1; then
   resticprofile self-update || echo "Warning: resticprofile self-update failed, keeping the current version." >&2
 else
   echo "Installing resticprofile..."
-  resticprofile_url=$(latest_release_url creativeprojects/resticprofile "linux_amd64.tar.gz")
+  resticprofile_url=$(latest_release_url creativeprojects/resticprofile 'resticprofile_[0-9.]+_linux_amd64\.tar\.gz')
   curl -fsSL "$resticprofile_url" -o "$TMP_DIR/resticprofile.tar.gz"
   tar -xzf "$TMP_DIR/resticprofile.tar.gz" -C "$TMP_DIR"
   chmod +x "$TMP_DIR/resticprofile"
