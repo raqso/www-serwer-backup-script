@@ -1,9 +1,10 @@
-#!/bin/bash
+# Configuration for backup.sh. This file is sourced by bash, so keep the VARIABLE='value' form.
 # shellcheck disable=SC2034 # vars are exported in backup.sh and used by profiles.yaml
-# Configuration file for backup script
-#
 
+# Website directory to back up (must exist), e.g. '/home/user/domains/example.com/public_html'.
 DIRECTORY_TO_BACKUP='/var/www/html'
+# Absolute path of the local restic repository, e.g. '/home/user/backups/my-site'.
+# Keep it outside the script directory.
 LOCAL_BACKUPS_PATH=''
 # rclone destination as remote:folder, e.g. 'gdrive:backups/my-site' (or an absolute local path).
 # WARNING: the folder is mirrored with 'rclone sync' - files in it that are not part of
@@ -13,6 +14,7 @@ RCLONE_REMOTE_NAME=''
 # Any rclone --bwlimit value works, see https://rclone.org/docs/#bwlimit-bandwidth-spec
 RCLONE_BWLIMIT=''
 
+# Database to dump with mysqldump.
 DB_HOST='localhost'
 DB_NAME=''
 DB_USER=''
