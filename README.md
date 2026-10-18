@@ -4,7 +4,7 @@ Backs up a website (files and one MySQL/MariaDB database) from a shared hosting 
 
 ## What it does
 
-Each run of `backup.sh`:
+Everything is done with the `wsb` command in the script directory. Each run of `wsb backup`:
 
 1. Dumps the database (`mysqldump`) into a restic repository on the server (the local repository).
 2. Backs up the website directory into the same repository.
@@ -19,7 +19,7 @@ Not backed up by default: `cache`, `log`, `tmp`, `img/tmp` and `img/**/*_default
 ## Requirements
 
 * Linux x86_64 (amd64). Other architectures (e.g. arm64) are not supported yet.
-* `bash`, `curl`, `bzip2`, `unzip`, `tar` (the installer checks these).
+* `bash` 4.2 or newer, `curl`, `bzip2`, `unzip`, `tar` (the installer checks these).
 * `mysqldump` from the MySQL/MariaDB client, and a database user that can read the database.
 * `crontab` access, to run backups automatically.
 * Free disk space for the local repository. It lives on the same account, so it counts against your quota.
@@ -34,10 +34,10 @@ git clone --branch v0.3.0 https://github.com/raqso/www-serwer-backup-script.git
 cd www-serwer-backup-script
 ```
 
-2. Install [restic](https://restic.readthedocs.io/), [resticprofile](https://creativeprojects.github.io/resticprofile/) and [rclone](https://rclone.org/) into `~/bin` and create the initial files, with the [installation.sh](./installation.sh) script:
+2. Install [restic](https://restic.readthedocs.io/), [resticprofile](https://creativeprojects.github.io/resticprofile/) and [rclone](https://rclone.org/) into `~/bin` and create the initial files:
 
 ```bash
-./installation.sh
+./wsb install
 ```
 
 3. Configure [rclone](https://rclone.org/) for cloud backups:
@@ -50,7 +50,7 @@ rclone config
 
 5. Copy the generated `password-file` somewhere outside the server (see [Security notes](#security-notes)).
 
-6. Run `./backup.sh -v` once to check that everything works, then [schedule it](#running-and-cron).
+6. Run `./wsb backup -v` once to check that everything works, then [schedule it](#running-and-cron).
 
 ## Configuration
 
@@ -67,27 +67,28 @@ rclone config
 | `DB_USER` | Database user. | `my_site_user` |
 | `DB_PASS` | Database password. | |
 
-`DIRECTORY_TO_BACKUP`, `LOCAL_BACKUPS_PATH`, `RCLONE_REMOTE_NAME`, `DB_NAME` and `DB_USER` must be set, otherwise `backup.sh` stops with an error. `DB_HOST` defaults to `localhost` in the example file.
+`DIRECTORY_TO_BACKUP`, `LOCAL_BACKUPS_PATH`, `RCLONE_REMOTE_NAME`, `DB_NAME` and `DB_USER` must be set, otherwise `wsb backup` stops with an error. `DB_HOST` defaults to `localhost` in the example file.
 
-**Warning:** the `RCLONE_REMOTE_NAME` folder is mirrored with `rclone sync`: everything in it that is not part of the backup gets deleted. Use a dedicated, empty folder, never the remote root. `backup.sh` refuses `gdrive:`, `gdrive:/` and a bare name like `gdrive`.
+**Warning:** the `RCLONE_REMOTE_NAME` folder is mirrored with `rclone sync`: everything in it that is not part of the backup gets deleted. Use a dedicated, empty folder, never the remote root. `wsb backup` refuses `gdrive:`, `gdrive:/` and a bare name like `gdrive`.
 
 ## Security notes
 
 * **Keep a copy of `password-file` outside the server** (a password manager, an encrypted USB stick). It is the key to the repository. Without it the backups cannot be restored, and if the server is lost, the key is lost with it. The installer never overwrites an existing `password-file`.
-* **The cloud copy is a mirror, not a separate history.** `rclone sync` makes the cloud folder identical to the local repository. If the local repository is deleted or damaged in a way the check does not detect, the next sync can copy that to the cloud too. `backup.sh` guards against two cases: it does not upload when the check fails, and it does not create a new repository when the local one is missing but the cloud has one. This is a known limitation: keep the cloud account itself secure, and do not delete the local repository by hand.
+* **The cloud copy is a mirror, not a separate history.** `rclone sync` makes the cloud folder identical to the local repository. If the local repository is deleted or damaged in a way the check does not detect, the next sync can copy that to the cloud too. `wsb backup` guards against two cases: it does not upload when the check fails, and it does not create a new repository when the local one is missing but the cloud has one. This is a known limitation: keep the cloud account itself secure, and do not delete the local repository by hand.
 * `config.conf` contains the database password. The installer sets `config.conf` and `password-file` to mode 600, and `logs/` is private to your user. Do not loosen this.
 * The database credentials reach `mysqldump` through an option file (`mysqldump.cnf`, mode 600, deleted after the run), never on a command line that other users of the server could see with `ps`. Any characters work in `DB_PASS`.
 
 ## Running and cron
 
 ```bash
-./backup.sh        # quiet when everything is fine
-./backup.sh -v     # also show the output on the terminal
-./backup.sh -h     # usage
+./wsb backup       # quiet when everything is fine
+./wsb backup -v    # also show the output on the terminal
+./wsb backup -h    # usage
+./wsb --version
 ```
 
 * A successful run prints nothing, so cron sends no mail. On failure an `ERROR` message with the end of the log goes to stderr, which cron mails to you.
-* Exit codes: `0` success (also for `-h`), `1` a step or a check failed, `2` unknown argument.
+* Exit codes: `0` success (also for `-h`), `1` a step or a check failed, a required tool is missing, or an unknown argument was given.
 * The full output of every run is saved in `logs/` next to the script (`logs/backup-<date>-<time>-<pid>.log`). Logs older than 30 days are deleted.
 * One backup runs at a time. A second one started meanwhile exits with an error. The lock is `backup.lock` in the script directory.
 * The backup runs with low priority (`nice -n 15`), so it gives way to your website.
@@ -95,10 +96,12 @@ rclone config
 Example: run daily at 3:15 (edit with `crontab -e`, use the real path):
 
 ```
-15 3 * * * /home/USER/www-serwer-backup-script/backup.sh
+15 3 * * * /home/USER/www-serwer-backup-script/wsb backup
 ```
 
-Cron has a minimal `PATH`. `backup.sh` adds `~/bin` itself, so you do not need to set it.
+Cron has a minimal `PATH`. `wsb` adds `~/bin` itself, so you do not need to set it.
+
+`backup.sh` and `installation.sh` still work (they run `wsb backup` and `wsb install` with the same arguments), so existing cron entries keep working. They are deprecated and will be removed in v1.0: switch your cron entry to `wsb backup`.
 
 ## Restore
 
@@ -138,9 +141,9 @@ The files appear under their original path, e.g. `/home/USER/restore/home/USER/d
    ```
 
 5. Restore the files and the database with steps 1 to 3 above.
-6. Fill in `config.conf` and run `./backup.sh -v`. It continues the existing history.
+6. Fill in `config.conf` and run `./wsb backup -v`. It continues the existing history.
 
-`backup.sh` prints this same `rclone copy` command when it finds the cloud copy but no local repository.
+`wsb backup` prints this same `rclone copy` command when it finds the cloud copy but no local repository.
 
 **Test your backups from time to time.** Restore into a temporary directory and a throwaway database, as above, and check that the files and data are there. You can also run `~/bin/restic -r <repo> --password-file ./password-file check`.
 
@@ -167,12 +170,20 @@ Fetch the new tags, check out the new release and re-run the installer:
 ```bash
 git fetch --tags
 git checkout <new tag>
-./installation.sh
+./wsb install
 ```
 
-Re-running `installation.sh` is safe: it keeps your existing `password-file` and `config.conf`, and updates restic, resticprofile and rclone. Still, make sure you have a copy of `password-file` stored outside the server before updating.
+Re-running `wsb install` is safe: it keeps your existing `password-file` and `config.conf`, and updates restic, resticprofile and rclone. Still, make sure you have a copy of `password-file` stored outside the server before updating.
 
 ## Development
+
+`wsb` is generated with [Bashly](https://bashly.dev) from `src/` (`src/bashly.yml` defines the commands and flags, `src/*_command.sh` hold the code; settings in `settings.yml`). Do not edit `wsb` by hand. After changing `src/`, regenerate it and commit both:
+
+```bash
+./scripts/generate.sh
+```
+
+The script runs a pinned Bashly version in Docker, so no local Ruby is needed. The generated `wsb` is committed because servers usually have no Ruby; CI fails when it is out of date with `src/`.
 
 Shell scripts are linted with [shellcheck](https://www.shellcheck.net/) via [scripts/shellcheck.sh](./scripts/shellcheck.sh). Enable the versioned pre-commit hook once per clone:
 
@@ -184,7 +195,7 @@ The hook requires `shellcheck` installed locally (`brew install shellcheck` or `
 
 ## Testing
 
-End-to-end tests run the real `installation.sh` and `backup.sh` in Docker, in an environment similar to shared hosting: an Ubuntu container with a non-root user, a MariaDB container with a user that has limited privileges, and an rclone local directory standing in for the cloud. They include restoring the files and the database from the cloud copy.
+End-to-end tests run the real `wsb install` and `wsb backup` in Docker, in an environment similar to shared hosting: an Ubuntu container with a non-root user, a MariaDB container with a user that has limited privileges, and an rclone local directory standing in for the cloud. They include restoring the files and the database from the cloud copy.
 
 ```bash
 ./tests/e2e.sh
