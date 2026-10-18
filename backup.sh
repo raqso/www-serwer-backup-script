@@ -17,6 +17,7 @@ function log() {
 cd "$(dirname "$0")"
 
 if [ -f config.conf ]; then
+  # shellcheck source=config.conf.example
   . ./config.conf
 else
   log "No configuration file!"
