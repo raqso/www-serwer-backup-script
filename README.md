@@ -55,7 +55,7 @@ Re-running `installation.sh` is safe: it keeps your existing `password-file` and
 ./backup.sh
 ```
 
-You can add this to cron or run manually when needed.
+You can add this to cron or run manually when needed. A successful run prints nothing; the full output of each run is saved in `logs/` next to the script, and on failure an ERROR with the end of that log is printed to stderr. Use `./backup.sh -v` to also see the output on the terminal. Only one backup runs at a time; a second one started meanwhile exits with an error.
 
 ## Development
 
