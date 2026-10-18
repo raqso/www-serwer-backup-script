@@ -16,3 +16,7 @@ jobs:
       - run: shellcheck --version
       - run: ./scripts/shellcheck.sh
       - run: ./tests/release_url_test.sh
+      - name: wsb is up to date with src/
+        run: |
+          ./scripts/generate.sh
+          git diff --exit-code -- wsb || { echo "::error::wsb is out of date: run scripts/generate.sh and commit wsb"; exit 1; }

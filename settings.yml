@@ -1,0 +1,14 @@
+# Bashly settings (https://bashly.dev). Regenerate wsb with scripts/generate.sh.
+source_dir: src
+target_dir: .
+# No 'set' directive: backup deliberately has no 'set -e' (a failed step must not stop
+# the following ones). install sets its own strict mode. (strict: false would add set -e.)
+strict: ''
+enable_view_markers: never
+enable_inspect_args: never
+enable_sourcing: never
+enable_deps_array: never
+enable_env_var_names_array: never
+# backup has its own run() helper; keep bashly's main function out of its way.
+function_names:
+  run: wsb_run
