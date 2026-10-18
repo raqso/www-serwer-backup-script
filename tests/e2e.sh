@@ -358,20 +358,26 @@ scenario_db_password_not_on_command_line() {
 }
 
 # Any character in the DB password works: nothing is parsed by a shell or split into words.
+# The account's own ~/.my.cnf must not override config.conf.
 scenario_db_password_special_characters() {
   local pw=$'a b$HOME;c&d"e\\f`id`g\'h#i' sql_pw rc=0
+  undo_special() {
+    write_config
+    as_tester "rm -f $HOME_DIR/.my.cnf"
+    db_root -e "DROP USER IF EXISTS 'special'@'%'"
+  }
   sql_pw=${pw//\\/\\\\}
   sql_pw=${sql_pw//\'/\'\'}
   db_root <<<"CREATE USER 'special'@'%' IDENTIFIED BY '$sql_pw';
-GRANT SELECT, LOCK TABLES, SHOW VIEW, TRIGGER ON \`$DB_NAME\`.* TO 'special'@'%';" || return 1
-  write_config "DB_USER='special'" || return 1
+GRANT SELECT, LOCK TABLES, SHOW VIEW, TRIGGER ON \`$DB_NAME\`.* TO 'special'@'%';" || { undo_special; return 1; }
+  write_config "DB_USER='special'" || { undo_special; return 1; }
   # Appended over stdin, so no quoting layer in between; %q makes it a valid bash assignment.
-  docker exec -i -u tester -w "$APP_DIR" "$APP" sh -c 'cat >>config.conf' <<<"DB_PASS=$(printf %q "$pw")" || return 1
+  docker exec -i -u tester -w "$APP_DIR" "$APP" sh -c 'cat >>config.conf' <<<"DB_PASS=$(printf %q "$pw")" || { undo_special; return 1; }
+  as_tester "printf '[client]\nuser=nobody\npassword=wrong\n' >$HOME_DIR/.my.cnf" || { undo_special; return 1; }
   run_backup || { echo "backup.sh failed"; rc=1; }
   as_tester "$RESTIC -r $LOCAL_REPO dump latest --tag db database_dump.sql | grep -q 'INSERT INTO .posts.'" ||
     { echo "latest db snapshot has no data"; rc=1; }
-  write_config || return 1
-  db_root -e "DROP USER 'special'@'%'"
+  undo_special
   return "$rc"
 }
 

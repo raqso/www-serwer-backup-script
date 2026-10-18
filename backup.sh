@@ -66,14 +66,14 @@ mkdir -p logs || exit 1
 if command -v flock >/dev/null 2>&1; then
   exec 9>>backup.lock || exit 1
   flock -n 9 || die "Another backup is already running (lock held on $PWD/backup.lock)."
+  # Set only once the lock is ours, so a rejected second run leaves the first one's files alone.
+  trap 'rm -f mysqldump.cnf' EXIT
 else
   # ponytail: a killed run leaves the directory behind; it is reported, not removed automatically.
   mkdir backup.lock.d 2>/dev/null || die "Another backup is already running (lock directory $PWD/backup.lock.d exists).
 If no backup is running (e.g. a previous run was killed), remove that directory."
-  lock_dir=backup.lock.d
+  trap 'rm -f mysqldump.cnf; rmdir backup.lock.d' EXIT
 fi
-# Set only once the lock is ours, so a rejected second run leaves the first one's files alone.
-trap 'rm -f mysqldump.cnf; [ -z "$lock_dir" ] || rmdir "$lock_dir"' EXIT
 
 # The PID keeps the names of two runs started in the same second apart.
 LOG_FILE="logs/backup-$(date +%Y%m%d-%H%M%S)-$$.log"
@@ -127,6 +127,8 @@ function cnf_value() {
   value="${value//\"/\\\"}"
   printf '"%s"' "${value//$'\n'/\\n}"
 }
+# Removed first: '>' keeps the mode of an existing file, the umask applies only on create.
+rm -f mysqldump.cnf
 printf '[client]\nuser=%s\npassword=%s\nhost=%s\n' "$(cnf_value "$DB_USER")" "$(cnf_value "$DB_PASS")" \
   "$(cnf_value "$DB_HOST")" >mysqldump.cnf || die "Could not write $PWD/mysqldump.cnf."
 
