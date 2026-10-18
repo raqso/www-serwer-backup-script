@@ -3,7 +3,7 @@
 # Docker setup (non-root user, limited DB privileges, rclone local "cloud").
 # Usage: ./tests/e2e.sh   (needs Docker and network access)
 # Add a scenario: write a scenario_* function, then add a run_scenario line at the bottom.
-# shellcheck disable=SC2329 # cleanup and scenario_* are invoked indirectly (trap, run_scenario)
+# shellcheck disable=SC2317,SC2329 # cleanup and scenario_* are invoked indirectly (trap, run_scenario)
 
 set -uo pipefail
 
