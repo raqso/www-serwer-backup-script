@@ -11,12 +11,14 @@ else
   }
 
   restic_url=$(get_latest_restic_url)
-  curl -L $restic_url -o restic.bz2
+  curl -L "$restic_url" -o restic.bz2
   bzip2 -d restic.bz2
   chmod +x restic
   mkdir -p ~/bin
   mv restic ~/bin/
+  # shellcheck disable=SC2016 # $HOME and $PATH must expand in .bashrc, not here
   echo 'export PATH=$HOME/bin:$PATH' >>~/.bashrc
+  # shellcheck source=/dev/null
   source ~/.bashrc
   restic version
 fi
@@ -32,12 +34,14 @@ else
   }
 
   resticprofile_url=$(get_latest_resticprofile_url)
-  curl -L $resticprofile_url -o resticprofile.tar.gz
+  curl -L "$resticprofile_url" -o resticprofile.tar.gz
   tar -xzf resticprofile.tar.gz
   chmod +x resticprofile
   mkdir -p ~/bin
   mv resticprofile ~/bin/
+  # shellcheck disable=SC2016 # $HOME and $PATH must expand in .bashrc, not here
   echo 'export PATH=$HOME/bin:$PATH' >>~/.bashrc
+  # shellcheck source=/dev/null
   source ~/.bashrc
   resticprofile version
 fi
@@ -51,11 +55,11 @@ else
   curl -O https://downloads.rclone.org/rclone-current-linux-amd64.zip
   unzip rclone-current-linux-amd64.zip
   rm rclone-current-linux-amd64.zip
-  cd rclone-*-linux-amd64
-  mv rclone ~/bin/
-  cd ..
+  (cd rclone-*-linux-amd64 && mv rclone ~/bin/)
   rm -rf rclone-*-linux-amd64
+  # shellcheck disable=SC2016 # $HOME and $PATH must expand in .bashrc, not here
   echo 'export PATH=$HOME/bin:$PATH' >>~/.bashrc
+  # shellcheck source=/dev/null
   source ~/.bashrc
   rclone version
 fi
