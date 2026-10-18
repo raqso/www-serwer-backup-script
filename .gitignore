@@ -3,3 +3,4 @@ password-file
 logs/
 backup.lock
 backup.lock.d/
+mysqldump.cnf

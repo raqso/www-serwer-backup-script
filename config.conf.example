@@ -14,7 +14,7 @@ RCLONE_REMOTE_NAME=''
 # Any rclone --bwlimit value works, see https://rclone.org/docs/#bwlimit-bandwidth-spec
 RCLONE_BWLIMIT=''
 
-# Database to dump with mysqldump.
+# Database to dump with mysqldump. Any characters work in the password; write a ' as '\''.
 DB_HOST='localhost'
 DB_NAME=''
 DB_USER=''

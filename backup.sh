@@ -70,8 +70,10 @@ else
   # ponytail: a killed run leaves the directory behind; it is reported, not removed automatically.
   mkdir backup.lock.d 2>/dev/null || die "Another backup is already running (lock directory $PWD/backup.lock.d exists).
 If no backup is running (e.g. a previous run was killed), remove that directory."
-  trap 'rmdir backup.lock.d' EXIT
+  lock_dir=backup.lock.d
 fi
+# Set only once the lock is ours, so a rejected second run leaves the first one's files alone.
+trap 'rm -f mysqldump.cnf; [ -z "$lock_dir" ] || rmdir "$lock_dir"' EXIT
 
 # The PID keeps the names of two runs started in the same second apart.
 LOG_FILE="logs/backup-$(date +%Y%m%d-%H%M%S)-$$.log"
@@ -117,7 +119,18 @@ if [ -n "$RCLONE_BWLIMIT" ]; then
     die "RCLONE_BWLIMIT is not a valid rclone --bwlimit value (e.g. '10M'): ${error%%$'\n'*}"
 fi
 
-export DB_USER DB_PASS DB_HOST DB_NAME
+# mysqldump reads the credentials from an option file (mode 600 via umask), so they never
+# appear on a command line, where other users of the server could see them with ps.
+# Option-file values: double-quoted, \ and " escaped, a newline written as \n.
+function cnf_value() {
+  local value="${1//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  printf '"%s"' "${value//$'\n'/\\n}"
+}
+printf '[client]\nuser=%s\npassword=%s\nhost=%s\n' "$(cnf_value "$DB_USER")" "$(cnf_value "$DB_PASS")" \
+  "$(cnf_value "$DB_HOST")" >mysqldump.cnf || die "Could not write $PWD/mysqldump.cnf."
+
+export DB_NAME
 export DIRECTORY_TO_BACKUP LOCAL_BACKUPS_PATH RCLONE_REMOTE_NAME
 
 # resticprofile creates a new empty repository when none exists locally, and the

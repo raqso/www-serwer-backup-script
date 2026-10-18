@@ -15,8 +15,9 @@ database:
     stdin: true
     # Flags chosen to work with limited shared-hosting privileges (no PROCESS,
     # LOCK TABLES, RELOAD or EVENT needed). --loose- makes MariaDB ignore the
-    # MySQL-only GTID option instead of failing.
-    stdin-command: "mysqldump --single-transaction --no-tablespaces --routines --default-character-set=utf8mb4 --hex-blob --loose-set-gtid-purged=OFF -u$DB_USER -p$DB_PASS -h$DB_HOST $DB_NAME"
+    # MySQL-only GTID option instead of failing. The credentials come from the file written
+    # by backup.sh. resticprofile hands this line to sh unexpanded, so sh expands "$DB_NAME".
+    stdin-command: 'mysqldump --defaults-extra-file=./mysqldump.cnf --single-transaction --no-tablespaces --routines --default-character-set=utf8mb4 --hex-blob --loose-set-gtid-purged=OFF "$DB_NAME"'
     stdin-filename: "database_dump.sql"
     tag:
       - db

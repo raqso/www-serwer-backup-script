@@ -344,6 +344,37 @@ scenario_low_priority() {
   return "$rc"
 }
 
+# Other users of a shared server can read every process command line (ps), so the DB
+# password must not be on any. The shim records them all while the dump starts.
+scenario_db_password_not_on_command_line() {
+  local rc=0
+  as_tester "mkdir -p $HOME_DIR/shim && printf '#!/bin/sh\ncat /proc/[0-9]*/cmdline >$HOME_DIR/cmdlines\nexec /usr/bin/mysqldump \"\$@\"\n' >$HOME_DIR/shim/mysqldump && chmod +x $HOME_DIR/shim/mysqldump" || return 1
+  TEST_PATH="$HOME_DIR/shim:/usr/bin:/bin" run_backup || { echo "backup.sh failed"; rc=1; }
+  as_tester "grep -aq 'shim/mysqldump' $HOME_DIR/cmdlines" || { echo "shim did not record the mysqldump command line"; rc=1; }
+  as_tester "grep -aqF '$DB_PASS' $HOME_DIR/cmdlines" && { echo "DB password found on a command line"; rc=1; }
+  as_tester "test ! -e mysqldump.cnf" || { echo "mysqldump.cnf left behind"; rc=1; }
+  as_tester "rm -r $HOME_DIR/shim $HOME_DIR/cmdlines"
+  return "$rc"
+}
+
+# Any character in the DB password works: nothing is parsed by a shell or split into words.
+scenario_db_password_special_characters() {
+  local pw=$'a b$HOME;c&d"e\\f`id`g\'h#i' sql_pw rc=0
+  sql_pw=${pw//\\/\\\\}
+  sql_pw=${sql_pw//\'/\'\'}
+  db_root <<<"CREATE USER 'special'@'%' IDENTIFIED BY '$sql_pw';
+GRANT SELECT, LOCK TABLES, SHOW VIEW, TRIGGER ON \`$DB_NAME\`.* TO 'special'@'%';" || return 1
+  write_config "DB_USER='special'" || return 1
+  # Appended over stdin, so no quoting layer in between; %q makes it a valid bash assignment.
+  docker exec -i -u tester -w "$APP_DIR" "$APP" sh -c 'cat >>config.conf' <<<"DB_PASS=$(printf %q "$pw")" || return 1
+  run_backup || { echo "backup.sh failed"; rc=1; }
+  as_tester "$RESTIC -r $LOCAL_REPO dump latest --tag db database_dump.sql | grep -q 'INSERT INTO .posts.'" ||
+    { echo "latest db snapshot has no data"; rc=1; }
+  write_config || return 1
+  db_root -e "DROP USER 'special'@'%'"
+  return "$rc"
+}
+
 # A failing files backup must not stop the retention policy (or the repository would grow
 # until the quota is full) nor the upload of the database backup.
 scenario_www_failure_still_maintained_and_uploaded() {
@@ -455,6 +486,8 @@ run_scenario scenario_quiet_success_logs_privately
 run_scenario scenario_generated_commands
 run_scenario scenario_rclone_bwlimit
 run_scenario scenario_low_priority
+run_scenario scenario_db_password_not_on_command_line
+run_scenario scenario_db_password_special_characters
 run_scenario scenario_concurrent_run_rejected
 run_scenario scenario_db_failure_still_backs_up_files
 run_scenario scenario_www_failure_still_maintained_and_uploaded
