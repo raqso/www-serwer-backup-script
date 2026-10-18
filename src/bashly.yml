@@ -1,6 +1,6 @@
 name: wsb
 help: Backs up a website (files and one MySQL/MariaDB database) from a shared hosting account.
-version: 0.4.0
+version: 0.5.0
 
 commands:
 - name: backup
@@ -30,3 +30,16 @@ commands:
     gzip: required but not installed. Ask your hosting provider or install it first.
     bzip2: required but not installed. Ask your hosting provider or install it first.
     unzip: required but not installed. Ask your hosting provider or install it first.
+
+- name: update
+  help: |-
+    Update wsb to the latest release (or the one given with --version), then run wsb install.
+    Downloads get.sh of that release from GitHub and runs it for this directory. config.conf, password-file and profiles.d/ are kept.
+  flags:
+  - long: --version
+    arg: tag
+    help: "release tag to install, e.g. v0.5.0 (default: the latest release)"
+  dependencies:
+    http_client:
+      command: [curl, wget]
+      help: required but not installed. Ask your hosting provider or install it first.

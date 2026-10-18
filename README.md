@@ -27,30 +27,26 @@ Not backed up by default: `cache`, `log`, `tmp`, `img/tmp` and `img/**/*_default
 
 ## Initial configuration
 
-1. Get the code at a release tag. The latest release is listed at https://github.com/raqso/www-serwer-backup-script/releases, use its tag instead of `v0.3.0` below.
+1. Download and install the latest release (works with `curl` or `wget`, no git needed):
 
 ```bash
-git clone --branch v0.3.0 https://github.com/raqso/www-serwer-backup-script.git
-cd www-serwer-backup-script
+(curl -fsSL https://github.com/raqso/www-serwer-backup-script/releases/latest/download/get.sh || wget -qO- https://github.com/raqso/www-serwer-backup-script/releases/latest/download/get.sh) | bash
+cd ~/www-serwer-backup-script
 ```
 
-2. Install [restic](https://restic.readthedocs.io/), [resticprofile](https://creativeprojects.github.io/resticprofile/) and [rclone](https://rclone.org/) into `~/bin` and create the initial files:
+This puts the program files into `~/www-serwer-backup-script` and runs `./wsb install`, which installs [restic](https://restic.readthedocs.io/), [resticprofile](https://creativeprojects.github.io/resticprofile/) and [rclone](https://rclone.org/) into `~/bin` and creates the initial files. To install a specific release, end the command with `| WSB_VERSION=v0.x.y bash` instead of `| bash`; to use another directory, set `WSB_DIR=/path` the same way.
 
-```bash
-./wsb install
-```
-
-3. Configure [rclone](https://rclone.org/) for cloud backups:
+2. Configure [rclone](https://rclone.org/) for cloud backups:
 
 ```bash
 rclone config
 ```
 
-4. Fill in `./config.conf` (see [Configuration](#configuration)).
+3. Fill in `./config.conf` (see [Configuration](#configuration)).
 
-5. Copy the generated `password-file` somewhere outside the server (see [Security notes](#security-notes)).
+4. Copy the generated `password-file` somewhere outside the server (see [Security notes](#security-notes)).
 
-6. Run `./wsb backup -v` once to check that everything works, then [schedule it](#running-and-cron).
+5. Run `./wsb backup -v` once to check that everything works, then [schedule it](#running-and-cron).
 
 ## Configuration
 
@@ -59,7 +55,7 @@ rclone config
 | Variable | Meaning | Example |
 | --- | --- | --- |
 | `DIRECTORY_TO_BACKUP` | Website directory to back up. Must exist. | `/home/user/domains/example.com/public_html` |
-| `LOCAL_BACKUPS_PATH` | Where the local restic repository is kept. Absolute path. Use a folder outside the script directory, so it can never end up in git. | `/home/user/backups/my-site` |
+| `LOCAL_BACKUPS_PATH` | Where the local restic repository is kept. Absolute path. Use a folder outside the script directory. | `/home/user/backups/my-site` |
 | `RCLONE_REMOTE_NAME` | Cloud destination as `remote:folder` (the remote name comes from `rclone config`). An absolute local path also works. | `gdrive:backups/my-site` |
 | `RCLONE_BWLIMIT` | Optional upload speed limit, any rclone `--bwlimit` value. Empty = unlimited. | `10M` |
 | `DB_HOST` | Database host. | `localhost` |
@@ -78,6 +74,7 @@ rclone config
 * `config.conf` contains the database password. The installer sets `config.conf` and `password-file` to mode 600, and `logs/` is private to your user. Do not loosen this.
 * The database credentials reach `mysqldump` through an option file (`mysqldump.cnf`, mode 600, deleted after the run), never on a command line that other users of the server could see with `ps`. Any characters work in `DB_PASS`.
 * `wsb install` checks every downloaded binary against the official SHA-256 file of its release (`SHA256SUMS` for restic and rclone, `checksums.txt` for resticprofile) before it is put into `~/bin`. On a mismatch or a missing entry it stops and leaves `~/bin` unchanged. This catches damaged and tampered downloads, but the checksum file comes from the same server as the binary; GPG signatures are not checked.
+* The install command and `wsb update` trust GitHub over HTTPS: `get.sh` and the source archive of the release are downloaded from github.com (and raw.githubusercontent.com for `wsb update`) and are not otherwise verified. To read `get.sh` before running it, download it first and run it with `bash get.sh`.
 
 ## Running and cron
 
@@ -132,7 +129,7 @@ The files appear under their original path, e.g. `/home/USER/restore/home/USER/d
 
 **4. Restore after losing the server** (the local repository is gone, the cloud copy is fine):
 
-1. Get the code again and run the installer, as in [Initial configuration](#initial-configuration) (steps 1 and 2).
+1. Install wsb again with the command from [Initial configuration](#initial-configuration) (step 1).
 2. Put your saved copy of `password-file` into the script directory, replacing the new one, then `chmod 600 password-file`.
 3. Run `rclone config` and create the same remote as before.
 4. Copy the repository from the cloud to the server:
@@ -164,7 +161,7 @@ If your site is not PrestaShop, the last two rules do nothing. To add your own c
 
 ## Local changes to retention and excludes
 
-Do not edit `profiles.yaml`: it is tracked by git, so a local edit conflicts with the next update. Put your changes into a `.yaml` file in `profiles.d/` instead (created by `wsb install`, not tracked by git). Every `profiles.d/*.yaml` file is read after `profiles.yaml` and its values replace the ones there. A list such as `exclude` is replaced as a whole, so repeat the entries you want to keep.
+Do not edit `profiles.yaml`: every update replaces it. Put your changes into a `.yaml` file in `profiles.d/` instead (created by `wsb install`, never touched by updates). Every `profiles.d/*.yaml` file is read after `profiles.yaml` and its values replace the ones there. A list such as `exclude` is replaced as a whole, so repeat the entries you want to keep.
 
 Example `profiles.d/local.yaml` (the same example is in `profiles.d/README.txt`):
 
@@ -187,15 +184,20 @@ Check the result with `./wsb backup -v`, or see the generated restic commands wi
 
 ## Updating
 
-Fetch the new tags, check out the new release and re-run the installer:
+Run the install command from [Initial configuration](#initial-configuration) again, or from the script directory:
 
 ```bash
-git fetch --tags
-git checkout <new tag>
-./wsb install
+./wsb update                    # latest release
+./wsb update --version v0.x.y   # a specific release
 ```
 
+Both replace only the program files (`wsb`, `backup.sh`, `installation.sh`, `profiles.yaml`, `config.conf.example`, `README.md`, `LICENSE`), then run `wsb install`, and print the old and new version. If your `profiles.yaml` differs from the new one, the old one is kept as `profiles.yaml.bak-<date>-<time>`: move any changes you made into `profiles.d/` (see [Local changes](#local-changes-to-retention-and-excludes)) and delete the copy.
+
 Re-running `wsb install` is safe: it keeps your existing `password-file`, `config.conf` and `profiles.d/`, and updates restic, resticprofile and rclone in `~/bin` to their latest releases (tools that are already up to date are skipped). It does not use the GitHub API, so its rate limit for shared server IPs does not apply. Still, make sure you have a copy of `password-file` stored outside the server before updating.
+
+### Moving from a git clone
+
+Older instructions installed wsb with `git clone` into `~/www-serwer-backup-script`. Run the install command (add `WSB_DIR=/path` before `bash` if your clone is elsewhere). It updates the directory in place, without git: your `config.conf`, `password-file`, `profiles.d/`, `logs/` and cron entry keep working. An edited `profiles.yaml` is saved as `profiles.yaml.bak-*` (see above). The `.git` directory is left alone and no longer used; you can delete it.
 
 ## Development
 
@@ -215,6 +217,14 @@ git config core.hooksPath .githooks
 
 The hook requires `shellcheck` installed locally (`brew install shellcheck` or `sudo apt-get install shellcheck`). GitHub Actions runs the same script on every push and pull request.
 
+`get.sh` is a standalone bash script (not generated by Bashly): it runs from a pipe before `wsb` exists. It carries a small copy of the download helpers in `src/lib/download.sh`; keep the two in sync.
+
+Releasing: after creating the GitHub release for a tag, attach `get.sh` from that tag, so the `releases/latest/download/get.sh` URL of the install command works:
+
+```bash
+gh release upload <tag> get.sh
+```
+
 ## Testing
 
 End-to-end tests run the real `wsb install` and `wsb backup` in Docker, in an environment similar to shared hosting: an Ubuntu container with a non-root user, a MariaDB container with a user that has limited privileges, and an rclone local directory standing in for the cloud. They include restoring the files and the database from the cloud copy.
@@ -224,6 +234,8 @@ End-to-end tests run the real `wsb install` and `wsb backup` in Docker, in an en
 ```
 
 Requirements: Docker and network access (the installer downloads restic, resticprofile and rclone). A run takes under two minutes once the images have been pulled. Containers and networks created by the test are removed afterwards, even when it fails. The app container uses the Docker host's architecture; set `E2E_PLATFORM=linux/amd64` or `linux/arm64` to choose one.
+
+The `get.sh` scenarios install from a source archive of the checked-out commit plus uncommitted changes to tracked files (`git stash create` + `git archive`; `git add` new files first), passed to `get.sh` with the test-only `WSB_TARBALL=/path/to.tar.gz` instead of a release download. `wsb update` is tested with a `curl` shim that serves the local `get.sh` for the raw.githubusercontent.com URL; one scenario downloads the real v0.4.0 release.
 
 `./tests/download_test.sh` checks the download helpers offline (release tag from the redirect, checksum lookup and verification).
 

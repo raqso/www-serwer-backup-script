@@ -26,6 +26,11 @@ WWW_DIR="$HOME_DIR/www"
 LOCAL_REPO="$HOME_DIR/backups"
 CLOUD_REPO="$HOME_DIR/cloud/backups"
 RESTIC="$HOME_DIR/bin/restic --password-file $APP_DIR/password-file"
+# get.sh installs into ~/www-serwer-backup-script by default.
+GET_DIR="$HOME_DIR/www-serwer-backup-script"
+# Source tarball of the working tree, laid out like a GitHub release archive (one top directory).
+TARBALL_DIR="$(mktemp -d)"
+TARBALL=/tmp/wsb.tar.gz
 
 FAILED=0
 SUMMARY=""
@@ -33,6 +38,7 @@ SUMMARY=""
 cleanup() {
   docker rm -f -v "$APP" "$DB" >/dev/null 2>&1
   docker network rm "$NET" >/dev/null 2>&1
+  rm -rf "$TARBALL_DIR"
 }
 trap cleanup EXIT
 
@@ -71,6 +77,15 @@ setup() {
     echo tmp > www/tmp/upload.tmp
     echo tmp > www/img/tmp/resize.jpg
   " || return 1
+
+  log "Building the source tarball for get.sh"
+  # 'git stash create' adds uncommitted changes to tracked files (it does not touch the stash
+  # list); new files must be added to git first. Empty in a clean checkout (CI): HEAD is used.
+  local tree
+  tree=$(git -C "$REPO_DIR" stash create) || return 1
+  git -C "$REPO_DIR" archive --format=tar.gz --prefix=www-serwer-backup-script-e2e/ \
+    -o "$TARBALL_DIR/wsb.tar.gz" "${tree:-HEAD}" || return 1
+  docker cp "$TARBALL_DIR/wsb.tar.gz" "$APP:$TARBALL" && docker exec "$APP" chmod 644 "$TARBALL" || return 1
 
   log "Waiting for MariaDB"
   local i
@@ -159,6 +174,108 @@ scenario_profiles_d_override() {
   local excludes
   excludes=$(grep 'restic backup' <<<"$out" | grep -o -- '--exclude=[^ ]*' | tr '\n' ' ')
   [ "$excludes" = "--exclude=$WWW_DIR/cache --exclude=$WWW_DIR/var/tmp " ] || { echo "exclude list not replaced: $excludes"; rc=1; }
+  return "$rc"
+}
+
+# get_sh <env assignments>: get.sh piped into bash from a login shell, like the README one-liner.
+get_sh() { docker exec -u tester -w "$HOME_DIR" "$APP" bash -lc "cat /src/get.sh | $1 bash"; }
+
+# The one-liner on a server without git: program files only, with exec bits, then wsb install.
+scenario_get_sh_fresh_install() {
+  local out rc=0
+  docker exec "$APP" sh -c '! command -v git' || { echo "git must not be installed in the container"; return 1; }
+  # A truncated download runs nothing: everything is in main(), called on the last line.
+  as_tester "sed '\$d' /src/get.sh | WSB_TARBALL=$TARBALL bash" || { echo "get.sh without its last line failed"; rc=1; }
+  as_tester "head -c 2000 /src/get.sh | WSB_TARBALL=$TARBALL bash 2>/dev/null" && { echo "half a get.sh succeeded"; rc=1; }
+  as_tester "test ! -e $GET_DIR" || { echo "truncated get.sh created $GET_DIR"; return 1; }
+  out=$(get_sh "WSB_TARBALL=$TARBALL" 2>&1) || { echo "$out"; echo "get.sh failed"; return 1; }
+  echo "$out" | tail -n 8
+  grep -q "Installed wsb v[0-9.]* into $GET_DIR" <<<"$out" || { echo "no install message"; rc=1; }
+  grep -q 'rclone config' <<<"$out" || { echo "no next steps"; rc=1; }
+  [ "$(as_tester "cd $GET_DIR && stat -c '%n %a' wsb backup.sh installation.sh")" = $'wsb 755\nbackup.sh 755\ninstallation.sh 755' ] ||
+    { echo "program files missing or not executable"; rc=1; }
+  as_tester "cd $GET_DIR && test -s profiles.yaml && test -s README.md && test -s LICENSE && test -s password-file && test -e config.conf && test -d profiles.d" ||
+    { echo "files missing in $GET_DIR"; rc=1; }
+  as_tester "test ! -e $GET_DIR/src && test ! -e $GET_DIR/tests && test ! -e $GET_DIR/get.sh" || { echo "non-program files copied"; rc=1; }
+  [ "$(as_tester "$GET_DIR/wsb --version")" = "$(as_tester "/src/wsb --version")" ] || { echo "wrong wsb version"; rc=1; }
+  return "$rc"
+}
+
+# Without curl: the latest tag is read with wget; a missing release fails before anything is written.
+scenario_get_sh_wget_only() {
+  local out dir="$HOME_DIR/wsb-wget" rc=0
+  docker exec "$APP" mv /usr/bin/curl /usr/bin/curl.off || return 1
+  out=$(get_sh "WSB_DIR=$dir WSB_TARBALL=$TARBALL" 2>&1) || { echo "$out"; echo "get.sh with wget failed"; rc=1; }
+  grep -q "Installed wsb v[0-9]*\.[0-9.]* into $dir" <<<"$out" || { echo "latest tag not resolved: $out"; rc=1; }
+  out=$(get_sh "WSB_DIR=$dir-missing WSB_VERSION=v0.0.0" 2>&1) && { echo "get.sh succeeded for a missing release"; rc=1; }
+  grep -q 'downloading wsb v0.0.0 failed' <<<"$out" || { echo "no download error: $out"; rc=1; }
+  docker exec "$APP" mv /usr/bin/curl.off /usr/bin/curl || return 1
+  as_tester "test ! -e $dir-missing" || { echo "$dir-missing was created"; rc=1; }
+  as_tester "rm -rf $dir"
+  return "$rc"
+}
+
+# A real release download (v0.4.0, the first one with wsb), then an update to this version:
+# local files are kept, versions are reported, the changed profiles.yaml is backed up once.
+scenario_get_sh_update_keeps_local_files() {
+  local out before after dir="$HOME_DIR/wsb-update" rc=0
+  local_files() { as_tester "cd $dir && sha256sum config.conf password-file profiles.d/local.yaml logs/old.log"; }
+  get_sh "WSB_DIR=$dir WSB_VERSION=v0.4.0" >/dev/null 2>&1 || { echo "installing v0.4.0 failed"; return 1; }
+  as_tester "cd $dir && echo \"DB_NAME='kept'\" >>config.conf && mkdir -p profiles.d logs && echo 'x: 1' >profiles.d/local.yaml && echo log >logs/old.log" || return 1
+  before=$(local_files) || return 1
+  out=$(get_sh "WSB_DIR=$dir WSB_TARBALL=$TARBALL" 2>&1) || { echo "$out"; echo "update failed"; return 1; }
+  echo "$out" | tail -n 6
+  after=$(local_files) || return 1
+  [ "$before" = "$after" ] || { echo "local files changed"; rc=1; }
+  grep -qF "Updated wsb: 0.4.0 -> $(as_tester "/src/wsb --version")." <<<"$out" || { echo "no version line"; rc=1; }
+  grep -q 'rclone config' <<<"$out" && { echo "first-time steps shown on update"; rc=1; }
+  # v0.4.0 shipped a different profiles.yaml.
+  as_tester "cd $dir && ls profiles.yaml.bak-* && cmp profiles.yaml /src/profiles.yaml" || { echo "profiles.yaml not backed up and replaced"; rc=1; }
+  grep -q 'NOTE: profiles.yaml has changed' <<<"$out" || { echo "no profiles.yaml note"; rc=1; }
+  out=$(get_sh "WSB_DIR=$dir WSB_TARBALL=$TARBALL" 2>&1) || { echo "$out"; echo "second update failed"; rc=1; }
+  grep -q NOTE <<<"$out" && { echo "unexpected note on an unchanged profiles.yaml: $out"; rc=1; }
+  [ "$(as_tester "ls $dir | grep -c '^profiles.yaml.bak-'")" = 1 ] || { echo "expected exactly one backup"; rc=1; }
+  as_tester "rm -rf $dir"
+  return "$rc"
+}
+
+# An old git clone is updated in place: .git stays, an edited profiles.yaml is saved, no git needed.
+scenario_get_sh_migrates_git_clone() {
+  local out dir="$HOME_DIR/wsb-git" rc=0
+  as_tester "mkdir -p $dir/.git && echo 'ref: refs/heads/master' >$dir/.git/HEAD && cd $dir &&
+    cp /src/profiles.yaml . && echo '# local edit' >>profiles.yaml && cp /src/config.conf.example config.conf" || return 1
+  out=$(get_sh "WSB_DIR=$dir WSB_TARBALL=$TARBALL" 2>&1) || { echo "$out"; echo "get.sh failed"; return 1; }
+  echo "$out" | grep -A2 NOTE
+  as_tester "test -f $dir/.git/HEAD" || { echo ".git removed"; rc=1; }
+  as_tester "cd $dir && grep -qx '# local edit' profiles.yaml.bak-* && cmp profiles.yaml /src/profiles.yaml" || { echo "edited profiles.yaml not saved"; rc=1; }
+  grep -q 'move your changes into profiles.d/' <<<"$out" || { echo "no profiles.d note"; rc=1; }
+  grep -q 'was a git clone' <<<"$out" || { echo "no git clone note"; rc=1; }
+  as_tester "rm -rf $dir"
+  return "$rc"
+}
+
+# wsb update downloads get.sh of the release from raw.githubusercontent.com and runs it for its
+# own directory. A curl shim serves the local get.sh for that URL (the tag is not released) and
+# WSB_TARBALL is passed through; everything else, including the latest tag, is real.
+scenario_wsb_update() {
+  local out rc=0
+  docker exec -i -u tester "$APP" sh -c "mkdir -p $HOME_DIR/shim && cat >$HOME_DIR/shim/curl && chmod +x $HOME_DIR/shim/curl" <<EOF || return 1
+#!/bin/sh
+echo "\$*" >>$HOME_DIR/curl.log
+case "\$4" in https://raw.githubusercontent.com/*) cp /src/get.sh "\$3"; exit ;; esac
+exec /usr/bin/curl "\$@"
+EOF
+  update() { docker exec -u tester -w "$GET_DIR" "$APP" bash -lc "PATH=$HOME_DIR/shim:\$PATH WSB_TARBALL=$TARBALL ./wsb update $1" 2>&1; }
+  out=$(update "--version v9.9.9") || { echo "$out"; echo "wsb update --version failed"; rc=1; }
+  as_tester "grep -qF 'https://raw.githubusercontent.com/raqso/www-serwer-backup-script/v9.9.9/get.sh' $HOME_DIR/curl.log" || { echo "wrong get.sh URL"; rc=1; }
+  grep -qF "Installed wsb v9.9.9 into $GET_DIR." <<<"$out" || { echo "WSB_VERSION/WSB_DIR not passed: $out"; rc=1; }
+  grep -q 'Updated wsb: ' <<<"$out" || { echo "no version line: $out"; rc=1; }
+  # Without --version: the latest release tag, from the real GitHub redirect.
+  out=$(update "") || { echo "$out"; echo "wsb update failed"; rc=1; }
+  as_tester "grep -qE 'https://raw.githubusercontent.com/raqso/www-serwer-backup-script/v[0-9]+\.[0-9.]+/get.sh' $HOME_DIR/curl.log" || { echo "latest tag not used"; rc=1; }
+  out=$(update "--version 1.0") && { echo "wsb update accepted a bad tag"; rc=1; }
+  grep -q 'not a release tag' <<<"$out" || { echo "no bad tag message: $out"; rc=1; }
+  as_tester "rm -r $HOME_DIR/shim $HOME_DIR/curl.log"
   return "$rc"
 }
 
@@ -554,6 +671,11 @@ run_scenario scenario_install_with_wget_only
 run_scenario scenario_bad_checksum_not_installed
 run_scenario scenario_backup
 run_scenario scenario_reinstall_keeps_files_skips_current_tools
+run_scenario scenario_get_sh_fresh_install
+run_scenario scenario_get_sh_wget_only
+run_scenario scenario_get_sh_update_keeps_local_files
+run_scenario scenario_get_sh_migrates_git_clone
+run_scenario scenario_wsb_update
 run_scenario scenario_profiles_d_override
 run_scenario scenario_cloud_copy_is_valid_repo
 run_scenario scenario_restore_from_cloud

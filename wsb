@@ -23,6 +23,7 @@ wsb_usage() {
   printf "%s\n" "Commands:"
   printf "  %s   Run a backup.\n" "backup "
   printf "  %s   Install or update restic, resticprofile and rclone into ~/bin (each download is checked against its official SHA-256 checksum).\n" "install"
+  printf "  %s   Update wsb to the latest release (or the one given with --version), then run wsb install.\n" "update "
   echo
 
   if [[ -n "$long_usage" ]]; then
@@ -83,6 +84,34 @@ wsb_install_usage() {
   if [[ -n "$long_usage" ]]; then
 
     printf "%s\n" "Options:"
+
+    printf "  %s\n" "--help, -h"
+    printf "    Show this help\n"
+    echo
+
+  fi
+}
+
+wsb_update_usage() {
+  if [[ -n $long_usage ]]; then
+    printf "wsb update\n\n"
+    printf "  Update wsb to the latest release (or the one given with --version), then run\n  wsb install.\n  Downloads get.sh of that release from GitHub and runs it for this directory.\n  config.conf, password-file and profiles.d/ are kept.\n\n"
+  else
+    printf "wsb update - Update wsb to the latest release (or the one given with --version), then run wsb install.\n\n"
+  fi
+
+  printf "%s\n" "Usage:"
+  printf "  wsb update [OPTIONS]\n"
+  printf "  wsb update --help | -h\n"
+  echo
+
+  if [[ -n "$long_usage" ]]; then
+
+    printf "%s\n" "Options:"
+
+    printf "  %s\n" "--version TAG"
+    printf "    release tag to install, e.g. v0.5.0 (default: the latest release)\n"
+    echo
 
     printf "  %s\n" "--help, -h"
     printf "    Show this help\n"
@@ -497,8 +526,8 @@ wsb_install_command() {
     echo "Created example configuration in ./config.conf, please fill this with your own values"
   fi
 
-  # Local overrides of profiles.yaml (see 'includes' there). Not tracked by git, so updates
-  # never conflict with them.
+  # Local overrides of profiles.yaml (see 'includes' there). Updates (get.sh) never touch
+  # this directory.
   mkdir -p profiles.d
   chmod 700 profiles.d
   if [ ! -e profiles.d/README.txt ]; then
@@ -507,7 +536,7 @@ wsb_install_command() {
       '# Local changes to profiles.yaml. Every *.yaml file in this directory is read after' \
       '# profiles.yaml, in alphabetical order. Its values replace the ones in profiles.yaml; a list' \
       '# (like exclude) is replaced as a whole, so repeat the entries you want to keep.' \
-      '# These files are not tracked by git, so updating wsb never touches them.' \
+      '# Updating wsb never touches these files.' \
       '#' \
       '# Example: save the lines below as profiles.d/local.yaml, without the leading "# ".' \
       '#' \
@@ -525,6 +554,33 @@ wsb_install_command() {
   fi
 
   echo
+
+}
+
+wsb_update_command() {
+
+  # wsb update: downloads get.sh of the requested (or latest) release and runs it for the
+  # directory of this wsb. get.sh does the actual update, so there is one implementation of it;
+  # WSB_TARBALL in the environment is passed through (tests).
+
+  set -euo pipefail
+
+  repo=raqso/www-serwer-backup-script
+  tag="${args[--version]:-}"
+  [ -n "$tag" ] || tag=$(latest_github_tag "$repo")
+  if [[ ! $tag =~ ^v[0-9]+(\.[0-9]+)+$ ]]; then
+    echo "Error: '${tag:-}' is not a release tag like v0.5.0 (or the latest release could not be found: network problem?)." >&2
+    exit 1
+  fi
+
+  TMP_DIR="$(mktemp -d)"
+  trap 'rm -rf "$TMP_DIR"' EXIT
+  url="https://raw.githubusercontent.com/$repo/$tag/get.sh"
+  if ! download "$url" "$TMP_DIR/get.sh"; then
+    echo "Error: downloading $url failed (no such release, a release without get.sh, or a network problem)." >&2
+    exit 1
+  fi
+  WSB_DIR="$(cd "$(dirname "$0")" && pwd)" WSB_VERSION="$tag" bash "$TMP_DIR/get.sh"
 
 }
 
@@ -568,6 +624,13 @@ parse_requirements() {
       action="install"
       shift
       wsb_install_parse_requirements "$@"
+      shift $#
+      ;;
+
+    update)
+      action="update"
+      shift
+      wsb_update_parse_requirements "$@"
       shift $#
       ;;
 
@@ -806,8 +869,88 @@ wsb_install_parse_requirements() {
 
 }
 
+wsb_update_parse_requirements() {
+  local key
+
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case "$key" in
+      --help | -h)
+        long_usage=yes
+        wsb_update_usage
+        exit
+        ;;
+
+      *)
+        break
+        ;;
+
+    esac
+  done
+
+  missing_deps=
+
+  if ! command -v curl wget >/dev/null 2>&1; then
+    printf "missing dependency: http_client (curl/wget)\n" >&2
+    printf "%s\n\n" "required but not installed. Ask your hosting provider or install it first." >&2
+    missing_deps=1
+  else
+    deps['http_client']="$(command -v curl wget | head -n1)"
+  fi
+
+  if [[ -n $missing_deps ]]; then
+    exit 1
+  fi
+
+  action="update"
+
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case "$key" in
+
+      --version)
+
+        if [[ -n ${2+x} ]]; then
+          args['--version']="$2"
+          shift
+          shift
+        else
+          printf "%s\n" "--version requires an argument: --version TAG" >&2
+          exit 1
+        fi
+        ;;
+
+      --)
+        shift
+        while [[ $# -gt 0 ]]; do
+          key="$1"
+
+          printf "invalid argument: %s\n" "$key" >&2
+          exit 1
+
+        done
+        break
+        ;;
+
+      -?*)
+        printf "invalid option: %s\n" "$key" >&2
+        exit 1
+        ;;
+
+      *)
+
+        printf "invalid argument: %s\n" "$key" >&2
+        exit 1
+
+        ;;
+
+    esac
+  done
+
+}
+
 initialize() {
-  declare -g version="0.4.0"
+  declare -g version="0.5.0"
 
   # Runs before the dependency checks of every command.
   # Prefer the tools installed by 'wsb install' over older system-wide ones, also under cron's
@@ -830,6 +973,7 @@ wsb_run() {
   case "$action" in
     "backup") wsb_backup_command ;;
     "install") wsb_install_command ;;
+    "update") wsb_update_command ;;
   esac
 }
 

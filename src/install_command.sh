@@ -136,8 +136,8 @@ else
   echo "Created example configuration in ./config.conf, please fill this with your own values"
 fi
 
-# Local overrides of profiles.yaml (see 'includes' there). Not tracked by git, so updates
-# never conflict with them.
+# Local overrides of profiles.yaml (see 'includes' there). Updates (get.sh) never touch
+# this directory.
 mkdir -p profiles.d
 chmod 700 profiles.d
 if [ ! -e profiles.d/README.txt ]; then
@@ -146,7 +146,7 @@ if [ ! -e profiles.d/README.txt ]; then
     '# Local changes to profiles.yaml. Every *.yaml file in this directory is read after' \
     '# profiles.yaml, in alphabetical order. Its values replace the ones in profiles.yaml; a list' \
     '# (like exclude) is replaced as a whole, so repeat the entries you want to keep.' \
-    '# These files are not tracked by git, so updating wsb never touches them.' \
+    '# Updating wsb never touches these files.' \
     '#' \
     '# Example: save the lines below as profiles.d/local.yaml, without the leading "# ".' \
     '#' \
