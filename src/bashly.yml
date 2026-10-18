@@ -1,6 +1,6 @@
 name: wsb
 help: Backs up a website (files and one MySQL/MariaDB database) from a shared hosting account.
-version: 0.4.0
+version: 0.5.0
 
 commands:
 - name: backup
