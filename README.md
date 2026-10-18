@@ -76,6 +76,7 @@ rclone config
 * **Keep a copy of `password-file` outside the server** (a password manager, an encrypted USB stick). It is the key to the repository. Without it the backups cannot be restored, and if the server is lost, the key is lost with it. The installer never overwrites an existing `password-file`.
 * **The cloud copy is a mirror, not a separate history.** `rclone sync` makes the cloud folder identical to the local repository. If the local repository is deleted or damaged in a way the check does not detect, the next sync can copy that to the cloud too. `backup.sh` guards against two cases: it does not upload when the check fails, and it does not create a new repository when the local one is missing but the cloud has one. This is a known limitation: keep the cloud account itself secure, and do not delete the local repository by hand.
 * `config.conf` contains the database password. The installer sets `config.conf` and `password-file` to mode 600, and `logs/` is private to your user. Do not loosen this.
+* The database credentials reach `mysqldump` through an option file (`mysqldump.cnf`, mode 600, deleted after the run), never on a command line that other users of the server could see with `ps`. Any characters work in `DB_PASS`.
 
 ## Running and cron
 
