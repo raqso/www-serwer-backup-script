@@ -1,0 +1,26 @@
+name: wsb
+help: Backs up a website (files and one MySQL/MariaDB database) from a shared hosting account.
+version: 0.4.0
+
+commands:
+- name: backup
+  help: |-
+    Run a backup.
+    Without -v a successful run prints nothing (cron sends no mail); the full output of every run is kept in logs/. Failures print an ERROR and the end of the log to stderr.
+  flags:
+  - long: --verbose
+    short: -v
+    help: show the backup output (it is always written to logs/)
+  dependencies:
+    resticprofile: run ./wsb install
+    rclone: run ./wsb install
+
+- name: install
+  help: |-
+    Install or update restic, resticprofile and rclone into ~/bin.
+    Also creates the initial password-file and config.conf next to wsb. Safe to run again: existing password-file and config.conf are never overwritten.
+  dependencies:
+    curl: required but not installed. Ask your hosting provider or install it first.
+    bzip2: required but not installed. Ask your hosting provider or install it first.
+    unzip: required but not installed. Ask your hosting provider or install it first.
+    tar: required but not installed. Ask your hosting provider or install it first.

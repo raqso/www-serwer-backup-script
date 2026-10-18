@@ -9,4 +9,6 @@ if ! command -v shellcheck >/dev/null 2>&1; then
 fi
 
 # All tracked scripts are bash; config.conf.example has no .sh extension so it is listed explicitly.
+# src/*.sh are the Bashly partials (no shebang, hence --shell=bash). The generated wsb has no
+# .sh extension and is not linted: its code is checked here, in src/.
 git ls-files -z -- '*.sh' config.conf.example | xargs -0 shellcheck --shell=bash

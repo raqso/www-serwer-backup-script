@@ -1,12 +1,12 @@
 #!/bin/bash
-# Checks that installation.sh picks the right release asset URL from both minified and
+# Checks that wsb install picks the right release asset URL from both minified and
 # pretty-printed GitHub API JSON. No network needed.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 # Load only the parser function, not the whole installer.
-eval "$(sed -n '/^extract_asset_url()/,/^}/p' installation.sh)"
+eval "$(sed -n '/^extract_asset_url()/,/^}/p' src/install_command.sh)"
 
 base=https://github.com/creativeprojects/resticprofile/releases/download/v0.33.1
 want="$base/resticprofile_0.33.1_linux_amd64.tar.gz"
