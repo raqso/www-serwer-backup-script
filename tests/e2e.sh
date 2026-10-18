@@ -102,7 +102,8 @@ scenario_first_install_generates_password_file() {
   done
 }
 
-scenario_backup() {
+# write_config [extra lines]: the valid test config; extra lines override its values.
+write_config() {
   as_tester "cat > config.conf <<EOF
 DIRECTORY_TO_BACKUP='$WWW_DIR'
 LOCAL_BACKUPS_PATH='$LOCAL_REPO'
@@ -111,9 +112,32 @@ DB_HOST='$DB'
 DB_NAME='$DB_NAME'
 DB_USER='$DB_USER'
 DB_PASS='$DB_PASS'
-EOF" || return 1
-  # Minimal environment, like cron.
-  as_tester "env -i HOME=$HOME_DIR PATH=/usr/bin:/bin bash backup.sh --verbose" || return 1
+${1:-}
+EOF"
+}
+
+# Minimal environment, like cron.
+run_backup() { as_tester "env -i HOME=$HOME_DIR PATH=/usr/bin:/bin bash backup.sh $*"; }
+
+# expect_backup_failure <grep -E pattern>: backup.sh (without -v) must fail with the pattern on stderr.
+expect_backup_failure() {
+  local err
+  if err=$(run_backup "2>&1 >/dev/null"); then
+    echo "backup.sh succeeded, expected failure"
+    return 1
+  fi
+  echo "stderr: $err"
+  grep -qE "$1" <<<"$err" || { echo "stderr does not match: $1"; return 1; }
+}
+
+# Checksums of every file in the local and cloud repositories.
+repos_fingerprint() { as_tester "cd $HOME_DIR && find backups cloud -type f -print0 2>/dev/null | sort -z | xargs -0 sha256sum"; }
+
+snapshot_ids() { as_tester "$RESTIC -r $1 snapshots --json" | grep -o '"id":"[^"]*"' | sort; }
+
+scenario_backup() {
+  write_config || return 1
+  run_backup --verbose || return 1
   as_tester "$RESTIC -r $LOCAL_REPO snapshots --tag db --json | grep -q '\"id\"'" || { echo "no db snapshot"; return 1; }
   as_tester "$RESTIC -r $LOCAL_REPO snapshots --tag www --json | grep -q '\"id\"'" || { echo "no www snapshot"; return 1; }
 }
@@ -153,6 +177,66 @@ scenario_restore_from_cloud() {
   [ "$src" = "$dst" ] && [ "$src" -gt 0 ]
 }
 
+# Losing the local repo must not create a new one that 'rclone sync' would push over the cloud history.
+scenario_missing_local_repo_keeps_cloud_history() {
+  local before_files before_ids after_ids
+  before_files=$(repos_fingerprint | grep ' cloud/') || return 1
+  before_ids=$(snapshot_ids "$CLOUD_REPO") || return 1
+  as_tester "rm -rf $LOCAL_REPO" || return 1
+
+  expect_backup_failure "rclone copy \"$CLOUD_REPO\" \"$LOCAL_REPO\"" || return 1
+  as_tester "test ! -e $LOCAL_REPO" || { echo "local repo was created"; return 1; }
+  [ "$(repos_fingerprint | grep ' cloud/')" = "$before_files" ] || { echo "cloud copy changed"; return 1; }
+
+  # If the destination can't be checked (here: unknown remote), abort instead of initializing.
+  write_config "RCLONE_REMOTE_NAME='nosuchremote:backups'" || return 1
+  expect_backup_failure "Could not check nosuchremote:backups" || { write_config; return 1; }
+  write_config || return 1
+  as_tester "test ! -e $LOCAL_REPO" || { echo "local repo was created"; return 1; }
+
+  log "Restoring the local repo with the suggested command"
+  as_tester "$HOME_DIR/bin/rclone copy '$CLOUD_REPO' '$LOCAL_REPO'" || return 1
+  run_backup || return 1
+  after_ids=$(snapshot_ids "$CLOUD_REPO") || return 1
+  [ -z "$(comm -23 <(echo "$before_ids") <(echo "$after_ids"))" ] || { echo "old snapshots missing in cloud"; return 1; }
+  local added
+  added=$(comm -13 <(echo "$before_ids") <(echo "$after_ids") | wc -l)
+  echo "snapshots in cloud: before=$(grep -c . <<<"$before_ids") after=$(grep -c . <<<"$after_ids")"
+  [ "$added" -ge 1 ] || { echo "no new snapshot in cloud"; return 1; }
+}
+
+# A remote root would be wiped by 'rclone sync'; a bare name is a local folder, so nothing gets uploaded.
+scenario_invalid_remote_name_rejected() {
+  local before rc=0 value
+  before=$(repos_fingerprint) || return 1
+  for value in gdrive gdrive: gdrive:/ "" /; do
+    log "RCLONE_REMOTE_NAME='$value'"
+    write_config "RCLONE_REMOTE_NAME='$value'" || return 1
+    expect_backup_failure "RCLONE_REMOTE_NAME (must be|is not set)" || rc=1
+  done
+  as_tester "test ! -e gdrive" || { echo "local 'gdrive' folder created"; rc=1; }
+  [ "$(repos_fingerprint)" = "$before" ] || { echo "repositories changed"; rc=1; }
+  write_config || return 1
+  return "$rc"
+}
+
+scenario_invalid_config_rejected() {
+  local rc=0 var
+  for var in DIRECTORY_TO_BACKUP LOCAL_BACKUPS_PATH DB_NAME DB_USER; do
+    write_config "$var=''" || return 1
+    expect_backup_failure "$var is not set" || rc=1
+  done
+  write_config "DIRECTORY_TO_BACKUP='/nonexistent'" || return 1
+  expect_backup_failure "DIRECTORY_TO_BACKUP does not exist" || rc=1
+  write_config "LOCAL_BACKUPS_PATH='backups'" || return 1
+  expect_backup_failure "LOCAL_BACKUPS_PATH must be an absolute path" || rc=1
+  as_tester "mv config.conf config.conf.bak" || return 1
+  expect_backup_failure "No configuration file" || rc=1
+  as_tester "mv config.conf.bak config.conf" || return 1
+  write_config || return 1
+  return "$rc"
+}
+
 # run_scenario <function> [known-bug]
 # Scenarios run in order and share container state.
 # A known-bug scenario that fails is reported as XFAIL and does not fail the run;
@@ -181,6 +265,9 @@ run_scenario scenario_backup
 run_scenario scenario_reinstall_keeps_password_and_config
 run_scenario scenario_cloud_copy_is_valid_repo
 run_scenario scenario_restore_from_cloud
+run_scenario scenario_invalid_remote_name_rejected
+run_scenario scenario_invalid_config_rejected
+run_scenario scenario_missing_local_repo_keeps_cloud_history
 printf '\n%s' "$SUMMARY"
 echo "Finished in $((SECONDS - START))s"
 exit "$FAILED"
