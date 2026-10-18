@@ -16,19 +16,38 @@ It could be used to automate the process of making backups of your www files and
 
 ## Initial configuration
 
-1. Install required [restic](https://restic.readthedocs.io/), [resticprofile](https://creativeprojects.github.io/resticprofile/) and [rclone](https://rclone.org/) tools and also setup initial files, with the [installation.sh](./installation.sh) script
+1. Get the code at a release tag. The latest release is listed at https://github.com/raqso/www-serwer-backup-script/releases, use its tag instead of `v0.1.0` below.
+
+```bash
+git clone --branch v0.1.0 https://github.com/raqso/www-serwer-backup-script.git
+cd www-serwer-backup-script
+```
+
+2. Install required [restic](https://restic.readthedocs.io/), [resticprofile](https://creativeprojects.github.io/resticprofile/) and [rclone](https://rclone.org/) tools and also setup initial files, with the [installation.sh](./installation.sh) script
 
 ```bash
 ./installation.sh
 ```
 
-2. Configure [rclone](https://rclone.org/) for cloud backups
+3. Configure [rclone](https://rclone.org/) for cloud backups
 
 ```bash
 rclone config
 ```
 
-3. Fill up the ./config.conf file with your own details and also store somewhere safe, the generated `password-file`.
+4. Fill up the ./config.conf file with your own details and also store somewhere safe, the generated `password-file`.
+
+## Updating
+
+Fetch the new tags, check out the new release and re-run the installer:
+
+```bash
+git fetch --tags
+git checkout <new tag>
+./installation.sh
+```
+
+Re-running `installation.sh` is safe: it keeps your existing `password-file` and `config.conf`. Still, make sure you have a copy of `password-file` stored outside the server before updating.
 
 ## Launching backup
 
