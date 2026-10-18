@@ -47,3 +47,13 @@ git config core.hooksPath .githooks
 ```
 
 The hook requires `shellcheck` installed locally (`brew install shellcheck` or `sudo apt-get install shellcheck`). GitHub Actions runs the same script on every push and pull request.
+
+## Testing
+
+End-to-end tests run the real `installation.sh` and `backup.sh` in Docker, in an environment similar to shared hosting: an Ubuntu container with a non-root user, a MariaDB container with a user that has limited privileges, and an rclone local directory standing in for the cloud.
+
+```bash
+./tests/e2e.sh
+```
+
+Requirements: Docker and network access (the installer downloads restic, resticprofile and rclone). A run takes about a minute once the images have been pulled. Containers and networks created by the test are removed afterwards, even when it fails.
