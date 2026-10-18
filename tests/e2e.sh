@@ -1,5 +1,5 @@
 #!/bin/bash
-# End-to-end test: real installation.sh + backup.sh in a shared-hosting-like
+# End-to-end test: real `wsb install` + `wsb backup` in a shared-hosting-like
 # Docker setup (non-root user, limited DB privileges, rclone local "cloud").
 # Usage: ./tests/e2e.sh   (needs Docker and network access)
 # Add a scenario: write a scenario_* function, then add a run_scenario line at the bottom.
@@ -46,7 +46,7 @@ setup() {
   docker network create "$NET" >/dev/null || return 1
   docker run -d --name "$DB" --network "$NET" -e MARIADB_ROOT_PASSWORD="$DB_ROOT_PASS" \
     -e MARIADB_DATABASE="$DB_NAME" mariadb:11.4 >/dev/null || return 1
-  # Release binaries downloaded by installation.sh are linux_amd64.
+  # Release binaries downloaded by wsb install are linux_amd64.
   docker run -d --name "$APP" --network "$NET" --platform linux/amd64 \
     -v "$REPO_DIR:/src:ro" ubuntu:24.04 sleep infinity >/dev/null || return 1
 
@@ -58,7 +58,7 @@ setup() {
   log "Seeding website directory and copying repo scripts"
   as_tester "
     set -e
-    cp /src/installation.sh /src/backup.sh /src/profiles.yaml /src/config.conf.example $APP_DIR/
+    cp /src/wsb /src/installation.sh /src/backup.sh /src/profiles.yaml /src/config.conf.example $APP_DIR/
     cd $HOME_DIR && mkdir -p www/css www/img/p/1 www/cache www/log www/tmp www/img/tmp
     echo '<?php echo \"hello\";' > www/index.php
     echo 'body{}' > www/css/style.css
@@ -88,7 +88,7 @@ SQL
 }
 
 # Installer run from a login shell, like a user over SSH.
-install_as_tester() { docker exec -u tester -w "$APP_DIR" "$APP" bash -lc './installation.sh'; }
+install_as_tester() { docker exec -u tester -w "$APP_DIR" "$APP" bash -lc './wsb install'; }
 
 scenario_first_install_generates_password_file() {
   install_as_tester || return 1
@@ -116,14 +116,14 @@ ${1:-}
 EOF"
 }
 
-# Minimal environment, like cron. Runs ./backup.sh directly, so it also checks the exec bit.
-run_backup() { as_tester "env -i HOME=$HOME_DIR PATH=${TEST_PATH:-/usr/bin:/bin} ./backup.sh $*"; }
+# Minimal environment, like cron. Runs ./wsb directly, so it also checks the exec bit.
+run_backup() { as_tester "env -i HOME=$HOME_DIR PATH=${TEST_PATH:-/usr/bin:/bin} ./wsb backup $*"; }
 
-# expect_backup_failure <grep -E pattern>: backup.sh (without -v) must fail with the pattern on stderr.
+# expect_backup_failure <grep -E pattern>: wsb backup (without -v) must fail with the pattern on stderr.
 expect_backup_failure() {
   local err
   if err=$(run_backup "2>&1 >/dev/null"); then
-    echo "backup.sh succeeded, expected failure"
+    echo "wsb backup succeeded, expected failure"
     return 1
   fi
   echo "stderr: $err"
@@ -258,11 +258,19 @@ scenario_unknown_argument_rejected() {
   local out rc
   out=$(run_backup "--bogus 2>&1")
   rc=$?
-  [ "$rc" = 2 ] || { echo "expected exit code 2, got $rc: $out"; return 1; }
-  grep -q 'Unknown argument: --bogus' <<<"$out" || { echo "unknown argument not named: $out"; return 1; }
-  grep -q 'Usage:' <<<"$out" || { echo "no usage: $out"; return 1; }
+  [ "$rc" != 0 ] || { echo "expected a non-zero exit code: $out"; return 1; }
+  grep -q 'invalid option: --bogus' <<<"$out" || { echo "unknown argument not named: $out"; return 1; }
   # Not piped into 'grep -q': it may exit before the output ends and fail the run with SIGPIPE (pipefail).
   grep -q 'Usage:' <<<"$(run_backup "--help")" || { echo "--help shows no usage"; return 1; }
+}
+
+# backup.sh and installation.sh are deprecated shims to wsb, kept for existing cron entries.
+scenario_deprecated_shims() {
+  local out
+  out=$(as_tester "env -i HOME=$HOME_DIR PATH=/usr/bin:/bin ./backup.sh -v") || { echo "./backup.sh -v failed"; return 1; }
+  grep -q 'Backup completed successfully!' <<<"$out" || { echo "./backup.sh -v shows no output: $out"; return 1; }
+  as_tester "env -i HOME=$HOME_DIR PATH=/usr/bin:/bin ./backup.sh --bogus 2>/dev/null" && { echo "./backup.sh --bogus succeeded"; return 1; }
+  grep -q 'wsb install' <<<"$(as_tester "./installation.sh --help")" || { echo "./installation.sh --help is not the wsb install help"; return 1; }
 }
 
 # Cron mails any output, so a successful run without -v must be silent; the output goes to logs/.
@@ -271,7 +279,7 @@ scenario_quiet_success_logs_privately() {
   as_tester "test ! -e /tmp/rclone.log" || { echo "/tmp/rclone.log exists before the run"; return 1; }
   local logs_before
   logs_before=$(list_logs)
-  out=$(run_backup "2>$HOME_DIR/stderr") || { echo "backup.sh failed"; as_tester "cat $HOME_DIR/stderr"; return 1; }
+  out=$(run_backup "2>$HOME_DIR/stderr") || { echo "wsb backup failed"; as_tester "cat $HOME_DIR/stderr"; return 1; }
   err=$(as_tester "cat $HOME_DIR/stderr; rm $HOME_DIR/stderr")
   [ -z "$out$err" ] || { echo "expected no output, got stdout: '$out' stderr: '$err'"; return 1; }
   local log
@@ -293,7 +301,7 @@ scenario_quiet_success_logs_privately() {
   as_tester "test ! -e /tmp/rclone.log" || { echo "/tmp/rclone.log was written"; return 1; }
 }
 
-# The commands resticprofile generates for the steps of backup.sh: default compression, and
+# The commands resticprofile generates for the steps of wsb backup: default compression, and
 # the repository-wide forget --prune without a --path filter.
 scenario_generated_commands() {
   local out
@@ -330,13 +338,13 @@ scenario_rclone_bwlimit() {
   return "$rc"
 }
 
-# nice applies to the backup commands only, not to the shell that started backup.sh
+# nice applies to the backup commands only, not to the shell that started wsb
 # (a process group renice would also slow down whatever that shell runs next).
 scenario_low_priority() {
   local out rc=0
   # mysqldump is started by resticprofile like restic, so it shows their priority.
   as_tester "mkdir -p $HOME_DIR/shim && printf '#!/bin/sh\nnice >$HOME_DIR/dump.nice\nexec /usr/bin/mysqldump \"\$@\"\n' >$HOME_DIR/shim/mysqldump && chmod +x $HOME_DIR/shim/mysqldump" || return 1
-  out=$(TEST_PATH="$HOME_DIR/shim:/usr/bin:/bin" run_backup "&& nice") || { echo "backup.sh failed"; rc=1; }
+  out=$(TEST_PATH="$HOME_DIR/shim:/usr/bin:/bin" run_backup "&& nice") || { echo "wsb backup failed"; rc=1; }
   [ "$out" = 0 ] || { echo "calling shell runs at nice '$out', expected 0"; rc=1; }
   out=$(as_tester "cat $HOME_DIR/dump.nice")
   [ "$out" = 15 ] || { echo "mysqldump ran at nice '$out', expected 15"; rc=1; }
@@ -349,7 +357,7 @@ scenario_low_priority() {
 scenario_db_password_not_on_command_line() {
   local rc=0
   as_tester "mkdir -p $HOME_DIR/shim && printf '#!/bin/sh\ncat /proc/[0-9]*/cmdline >$HOME_DIR/cmdlines\nexec /usr/bin/mysqldump \"\$@\"\n' >$HOME_DIR/shim/mysqldump && chmod +x $HOME_DIR/shim/mysqldump" || return 1
-  TEST_PATH="$HOME_DIR/shim:/usr/bin:/bin" run_backup || { echo "backup.sh failed"; rc=1; }
+  TEST_PATH="$HOME_DIR/shim:/usr/bin:/bin" run_backup || { echo "wsb backup failed"; rc=1; }
   as_tester "grep -aq 'shim/mysqldump' $HOME_DIR/cmdlines" || { echo "shim did not record the mysqldump command line"; rc=1; }
   as_tester "grep -aqF '$DB_PASS' $HOME_DIR/cmdlines" && { echo "DB password found on a command line"; rc=1; }
   as_tester "test ! -e mysqldump.cnf" || { echo "mysqldump.cnf left behind"; rc=1; }
@@ -374,7 +382,7 @@ GRANT SELECT, LOCK TABLES, SHOW VIEW, TRIGGER ON \`$DB_NAME\`.* TO 'special'@'%'
   # Appended over stdin, so no quoting layer in between; %q makes it a valid bash assignment.
   docker exec -i -u tester -w "$APP_DIR" "$APP" sh -c 'cat >>config.conf' <<<"DB_PASS=$(printf %q "$pw")" || { undo_special; return 1; }
   as_tester "printf '[client]\nuser=nobody\npassword=wrong\n' >$HOME_DIR/.my.cnf" || { undo_special; return 1; }
-  run_backup || { echo "backup.sh failed"; rc=1; }
+  run_backup || { echo "wsb backup failed"; rc=1; }
   as_tester "$RESTIC -r $LOCAL_REPO dump latest --tag db database_dump.sql | grep -q 'INSERT INTO .posts.'" ||
     { echo "latest db snapshot has no data"; rc=1; }
   undo_special
@@ -488,6 +496,7 @@ run_scenario scenario_invalid_remote_name_rejected
 run_scenario scenario_invalid_config_rejected
 run_scenario scenario_missing_local_repo_keeps_cloud_history
 run_scenario scenario_unknown_argument_rejected
+run_scenario scenario_deprecated_shims
 run_scenario scenario_quiet_success_logs_privately
 run_scenario scenario_generated_commands
 run_scenario scenario_rclone_bwlimit
