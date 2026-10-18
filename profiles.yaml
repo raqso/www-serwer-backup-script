@@ -10,6 +10,8 @@ default:
     check-after: true
 
   retention:
+    # Without this, version 1 of the resticprofile config never applies the policy below.
+    after-backup: true
     keep-daily: 7
     keep-weekly: 4
     keep-monthly: 12

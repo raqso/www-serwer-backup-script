@@ -259,6 +259,7 @@ scenario_quiet_success_logs_privately() {
   echo "log: $log"
   [ "$(as_tester "stat -c %a logs $log")" = $'700\n600' ] || { echo "logs/ must be 700 and the log 600"; return 1; }
   as_tester "grep -q 'snapshot .* saved' $log" || { echo "log has no restic output"; return 1; }
+  as_tester "grep -q 'cleaning up repository using retention information' $log" || { echo "retention policy was not applied"; return 1; }
   as_tester "test ! -e /tmp/rclone.log" || { echo "/tmp/rclone.log was written"; return 1; }
 }
 
