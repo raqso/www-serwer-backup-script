@@ -1,5 +1,10 @@
 # yaml-language-server: $schema=https://creativeprojects.github.io/resticprofile/jsonschema/config-1.json
 
+# Local changes go into profiles.d/*.yaml (not tracked by git), not into this file: they are
+# read after it and override its values (a list is replaced as a whole). No match is fine.
+includes:
+  - "profiles.d/*.yaml"
+
 default:
   repository: $LOCAL_BACKUPS_PATH
   initialize: true

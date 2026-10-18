@@ -10,8 +10,19 @@ permissions:
 
 jobs:
   e2e:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            platform: linux/amd64
+          - runner: ubuntu-24.04-arm
+            platform: linux/arm64
+    name: e2e (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - run: ./tests/e2e.sh
+        env:
+          E2E_PLATFORM: ${{ matrix.platform }}

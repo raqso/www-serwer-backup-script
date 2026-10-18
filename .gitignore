@@ -4,3 +4,5 @@ logs/
 backup.lock
 backup.lock.d/
 mysqldump.cnf
+profiles.d/*.yaml
+profiles.d/README.txt

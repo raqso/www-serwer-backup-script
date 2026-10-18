@@ -2,6 +2,7 @@
 # End-to-end test: real `wsb install` + `wsb backup` in a shared-hosting-like
 # Docker setup (non-root user, limited DB privileges, rclone local "cloud").
 # Usage: ./tests/e2e.sh   (needs Docker and network access)
+# E2E_PLATFORM=linux/amd64 or linux/arm64 sets the app container platform (default: the Docker host's).
 # Add a scenario: write a scenario_* function, then add a run_scenario line at the bottom.
 # shellcheck disable=SC2317,SC2329 # cleanup and scenario_* are invoked indirectly (trap, run_scenario)
 
@@ -12,6 +13,7 @@ ID="www-backup-e2e-$$"
 NET="$ID-net"
 DB="$ID-db"
 APP="$ID-app"
+PLATFORM="${E2E_PLATFORM:-linux/$(docker version --format '{{.Server.Arch}}')}"
 
 DB_ROOT_PASS='rootpass'
 DB_NAME='site'
@@ -46,13 +48,13 @@ setup() {
   docker network create "$NET" >/dev/null || return 1
   docker run -d --name "$DB" --network "$NET" -e MARIADB_ROOT_PASSWORD="$DB_ROOT_PASS" \
     -e MARIADB_DATABASE="$DB_NAME" mariadb:11.4 >/dev/null || return 1
-  # Release binaries downloaded by wsb install are linux_amd64.
-  docker run -d --name "$APP" --network "$NET" --platform linux/amd64 \
+  log "App container platform: $PLATFORM"
+  docker run -d --name "$APP" --network "$NET" --platform "$PLATFORM" \
     -v "$REPO_DIR:/src:ro" ubuntu:24.04 sleep infinity >/dev/null || return 1
 
   log "Installing OS packages (as root, like the hosting provider would)"
   docker exec "$APP" bash -c "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-    curl ca-certificates bzip2 unzip mariadb-client >/dev/null && useradd -m -s /bin/bash tester \
+    curl wget ca-certificates bzip2 unzip mariadb-client >/dev/null && useradd -m -s /bin/bash tester \
     && install -d -o tester -g tester $APP_DIR" || return 1
 
   log "Seeding website directory and copying repo scripts"
@@ -100,6 +102,64 @@ scenario_first_install_generates_password_file() {
   for tool in restic resticprofile rclone; do
     as_tester "$HOME_DIR/bin/$tool version >/dev/null" || { echo "$tool not runnable from ~/bin"; return 1; }
   done
+  # The binaries match the container's architecture (no emulation fallback).
+  as_tester "$HOME_DIR/bin/restic version" | grep -qF "$PLATFORM" || { echo "restic is not a $PLATFORM binary"; return 1; }
+  as_tester "stat -c %a profiles.d && test -s profiles.d/README.txt" | grep -qx 700 || { echo "profiles.d/ must be 700 and have a README.txt"; return 1; }
+}
+
+# The tools are downloaded again into ~/bin with wget alone (curl removed) and are verified.
+scenario_install_with_wget_only() {
+  local out rc=0
+  docker exec "$APP" mv /usr/bin/curl /usr/bin/curl.off || return 1
+  as_tester "rm $HOME_DIR/bin/restic $HOME_DIR/bin/resticprofile $HOME_DIR/bin/rclone" || rc=1
+  out=$(install_as_tester 2>&1) || { echo "$out"; echo "wsb install with wget failed"; rc=1; }
+  docker exec "$APP" mv /usr/bin/curl.off /usr/bin/curl || return 1
+  local tool
+  for tool in restic resticprofile rclone; do
+    grep -q "Installing $tool " <<<"$out" || { echo "$tool was not installed: $out"; rc=1; }
+    as_tester "$HOME_DIR/bin/$tool version >/dev/null" || { echo "$tool not runnable from ~/bin"; rc=1; }
+  done
+  return "$rc"
+}
+
+# A download that does not match the official checksum must not reach ~/bin. A curl shim
+# appends a byte to every downloaded .zip (rclone), and ~/bin/rclone is a fake old version.
+scenario_bad_checksum_not_installed() {
+  local before out rc=0
+  # wsb downloads with: curl -fsSL -o <file> <url>
+  docker exec -i -u tester "$APP" sh -c "mkdir -p $HOME_DIR/shim && cat >$HOME_DIR/shim/curl && chmod +x $HOME_DIR/shim/curl" <<'EOF' || return 1
+#!/bin/sh
+/usr/bin/curl "$@" || exit
+case "$2 $4" in -o\ *.zip) printf x >>"$3" ;; esac
+EOF
+  as_tester "printf '#!/bin/sh\necho rclone v0.0.1\n' >$HOME_DIR/bin/rclone" || return 1
+  before=$(as_tester "sha256sum $HOME_DIR/bin/*") || return 1
+  if out=$(docker exec -u tester -w "$APP_DIR" "$APP" bash -lc "PATH=$HOME_DIR/shim:\$PATH ./wsb install" 2>&1); then
+    echo "wsb install succeeded with a corrupted download"; rc=1
+  fi
+  echo "$out" | tail -n 3
+  grep -q 'checksum mismatch for rclone-v.*\.zip' <<<"$out" || { echo "no checksum mismatch message"; rc=1; }
+  [ "$(as_tester "sha256sum $HOME_DIR/bin/*")" = "$before" ] || { echo "$HOME_DIR/bin changed"; rc=1; }
+  as_tester "rm -r $HOME_DIR/shim"
+  install_as_tester >/dev/null || { echo "wsb install without the shim failed"; rc=1; }
+  as_tester "$HOME_DIR/bin/rclone version | grep -qv v0.0.1" || { echo "rclone not restored"; rc=1; }
+  return "$rc"
+}
+
+# The commented example in profiles.d/README.txt, saved as local.yaml, overrides the retention
+# and replaces the exclude list.
+scenario_profiles_d_override() {
+  local out rc=0
+  as_tester "sed -n '/^# maintenance:/,\$ s/^# //p' profiles.d/README.txt >profiles.d/local.yaml" || return 1
+  out=$(as_tester "set -a && . ./config.conf && export PATH=$HOME_DIR/bin:\$PATH && {
+    resticprofile --dry-run --name maintenance forget && resticprofile --dry-run --name www backup; } 2>&1") || rc=1
+  as_tester "rm profiles.d/local.yaml"
+  echo "$out" | grep dry-run
+  grep 'restic forget' <<<"$out" | grep -q -- '--keep-daily=14 --keep-monthly=12 --keep-weekly=4' || { echo "retention not overridden"; rc=1; }
+  local excludes
+  excludes=$(grep 'restic backup' <<<"$out" | grep -o -- '--exclude=[^ ]*' | tr '\n' ' ')
+  [ "$excludes" = "--exclude=$WWW_DIR/cache --exclude=$WWW_DIR/var/tmp " ] || { echo "exclude list not replaced: $excludes"; rc=1; }
+  return "$rc"
 }
 
 # write_config [extra lines]: the valid test config; extra lines override its values.
@@ -156,13 +216,15 @@ scenario_backup() {
   as_tester "$RESTIC -r $LOCAL_REPO snapshots --tag www --json | grep -q '\"id\"'" || { echo "no www snapshot"; return 1; }
 }
 
-# Re-running the installer (e.g. to update the tools) must keep the key and the filled-in config.
-scenario_reinstall_keeps_password_and_config() {
-  local before after
-  before=$(as_tester "sha256sum password-file config.conf") || return 1
-  install_as_tester || return 1
-  after=$(as_tester "sha256sum password-file config.conf") || return 1
-  [ "$before" = "$after" ] || { echo "password-file or config.conf changed"; return 1; }
+# Re-running the installer (e.g. to update the tools) must keep the key and the filled-in config,
+# and skip the tools that are already at the latest version.
+scenario_reinstall_keeps_files_skips_current_tools() {
+  local before after out
+  before=$(as_tester "sha256sum password-file config.conf $HOME_DIR/bin/*") || return 1
+  out=$(install_as_tester) || { echo "$out"; return 1; }
+  after=$(as_tester "sha256sum password-file config.conf $HOME_DIR/bin/*") || return 1
+  [ "$before" = "$after" ] || { echo "password-file, config.conf or ~/bin changed"; return 1; }
+  [ "$(grep -c 'is already installed and up to date' <<<"$out")" = 3 ] || { echo "expected 3 tools to be skipped: $out"; return 1; }
   local count
   count=$(as_tester "grep -cxF 'export PATH=\$HOME/bin:\$PATH' ~/.bashrc")
   [ "$count" = 1 ] || { echo "PATH line found $count times in ~/.bashrc, expected 1"; return 1; }
@@ -488,8 +550,11 @@ run_scenario() {
 START=$SECONDS
 setup || { echo "FAIL: setup"; exit 1; }
 run_scenario scenario_first_install_generates_password_file
+run_scenario scenario_install_with_wget_only
+run_scenario scenario_bad_checksum_not_installed
 run_scenario scenario_backup
-run_scenario scenario_reinstall_keeps_password_and_config
+run_scenario scenario_reinstall_keeps_files_skips_current_tools
+run_scenario scenario_profiles_d_override
 run_scenario scenario_cloud_copy_is_valid_repo
 run_scenario scenario_restore_from_cloud
 run_scenario scenario_invalid_remote_name_rejected

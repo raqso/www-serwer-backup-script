@@ -17,10 +17,16 @@ commands:
 
 - name: install
   help: |-
-    Install or update restic, resticprofile and rclone into ~/bin.
-    Also creates the initial password-file and config.conf next to wsb. Safe to run again: existing password-file and config.conf are never overwritten.
+    Install or update restic, resticprofile and rclone into ~/bin (each download is checked against its official SHA-256 checksum).
+    Also creates the initial password-file, config.conf and profiles.d/ next to wsb. Safe to run again: existing password-file and config.conf are never overwritten.
   dependencies:
-    curl: required but not installed. Ask your hosting provider or install it first.
+    http_client:
+      command: [curl, wget]
+      help: required but not installed. Ask your hosting provider or install it first.
+    sha256:
+      command: [sha256sum, shasum]
+      help: required but not installed. Ask your hosting provider or install it first.
+    tar: required but not installed. Ask your hosting provider or install it first.
+    gzip: required but not installed. Ask your hosting provider or install it first.
     bzip2: required but not installed. Ask your hosting provider or install it first.
     unzip: required but not installed. Ask your hosting provider or install it first.
-    tar: required but not installed. Ask your hosting provider or install it first.

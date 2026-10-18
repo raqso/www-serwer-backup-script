@@ -18,8 +18,8 @@ Not backed up by default: `cache`, `log`, `tmp`, `img/tmp` and `img/**/*_default
 
 ## Requirements
 
-* Linux x86_64 (amd64). Other architectures (e.g. arm64) are not supported yet.
-* `bash` 4.2 or newer, `curl`, `bzip2`, `unzip`, `tar` (the installer checks these).
+* Linux on x86_64 (amd64) or aarch64 (arm64).
+* `bash` 4.2 or newer, `curl` or `wget`, `sha256sum` or `shasum`, `tar`, `gzip`, `bzip2`, `unzip` (the installer checks these).
 * `mysqldump` from the MySQL/MariaDB client, and a database user that can read the database.
 * `crontab` access, to run backups automatically.
 * Free disk space for the local repository. It lives on the same account, so it counts against your quota.
@@ -77,6 +77,7 @@ rclone config
 * **The cloud copy is a mirror, not a separate history.** `rclone sync` makes the cloud folder identical to the local repository. If the local repository is deleted or damaged in a way the check does not detect, the next sync can copy that to the cloud too. `wsb backup` guards against two cases: it does not upload when the check fails, and it does not create a new repository when the local one is missing but the cloud has one. This is a known limitation: keep the cloud account itself secure, and do not delete the local repository by hand.
 * `config.conf` contains the database password. The installer sets `config.conf` and `password-file` to mode 600, and `logs/` is private to your user. Do not loosen this.
 * The database credentials reach `mysqldump` through an option file (`mysqldump.cnf`, mode 600, deleted after the run), never on a command line that other users of the server could see with `ps`. Any characters work in `DB_PASS`.
+* `wsb install` checks every downloaded binary against the official SHA-256 file of its release (`SHA256SUMS` for restic and rclone, `checksums.txt` for resticprofile) before it is put into `~/bin`. On a mismatch or a missing entry it stops and leaves `~/bin` unchanged. This catches damaged and tampered downloads, but the checksum file comes from the same server as the binary; GPG signatures are not checked.
 
 ## Running and cron
 
@@ -159,9 +160,30 @@ Defined in the `www` section of [profiles.yaml](./profiles.yaml), relative to `D
 * `img/tmp` (PrestaShop)
 * `img/**/*_default.jpg` (PrestaShop)
 
-If your site is not PrestaShop, the last two rules do nothing. Add your own cache and temp directories the same way.
+If your site is not PrestaShop, the last two rules do nothing. To add your own cache and temp directories, or change the retention, see [Local changes](#local-changes-to-retention-and-excludes).
 
-Retention and excludes can only be changed by editing `profiles.yaml`. That file is tracked by git, so a local edit conflicts with `git checkout <new tag>` when updating. Keep such edits small, and re-apply them after an update (e.g. `git stash` before, `git stash pop` after).
+## Local changes to retention and excludes
+
+Do not edit `profiles.yaml`: it is tracked by git, so a local edit conflicts with the next update. Put your changes into a `.yaml` file in `profiles.d/` instead (created by `wsb install`, not tracked by git). Every `profiles.d/*.yaml` file is read after `profiles.yaml` and its values replace the ones there. A list such as `exclude` is replaced as a whole, so repeat the entries you want to keep.
+
+Example `profiles.d/local.yaml` (the same example is in `profiles.d/README.txt`):
+
+```yaml
+maintenance:
+  forget:
+    keep-daily: 14
+www:
+  backup:
+    exclude:
+      - "$DIRECTORY_TO_BACKUP/cache"
+      - "$DIRECTORY_TO_BACKUP/var/tmp"
+```
+
+Check the result with `./wsb backup -v`, or see the generated restic commands without running them:
+
+```bash
+(set -a && . ./config.conf && ~/bin/resticprofile --dry-run --name maintenance forget)
+```
 
 ## Updating
 
@@ -173,11 +195,11 @@ git checkout <new tag>
 ./wsb install
 ```
 
-Re-running `wsb install` is safe: it keeps your existing `password-file` and `config.conf`, and updates restic, resticprofile and rclone. Still, make sure you have a copy of `password-file` stored outside the server before updating.
+Re-running `wsb install` is safe: it keeps your existing `password-file`, `config.conf` and `profiles.d/`, and updates restic, resticprofile and rclone in `~/bin` to their latest releases (tools that are already up to date are skipped). It does not use the GitHub API, so its rate limit for shared server IPs does not apply. Still, make sure you have a copy of `password-file` stored outside the server before updating.
 
 ## Development
 
-`wsb` is generated with [Bashly](https://bashly.dev) from `src/` (`src/bashly.yml` defines the commands and flags, `src/*_command.sh` hold the code; settings in `settings.yml`). Do not edit `wsb` by hand. After changing `src/`, regenerate it and commit both:
+`wsb` is generated with [Bashly](https://bashly.dev) from `src/` (`src/bashly.yml` defines the commands and flags, `src/*_command.sh` hold the code, `src/lib/` shared functions; settings in `settings.yml`). Do not edit `wsb` by hand. After changing `src/`, regenerate it and commit both:
 
 ```bash
 ./scripts/generate.sh
@@ -201,6 +223,8 @@ End-to-end tests run the real `wsb install` and `wsb backup` in Docker, in an en
 ./tests/e2e.sh
 ```
 
-Requirements: Docker and network access (the installer downloads restic, resticprofile and rclone). A run takes under two minutes once the images have been pulled. Containers and networks created by the test are removed afterwards, even when it fails.
+Requirements: Docker and network access (the installer downloads restic, resticprofile and rclone). A run takes under two minutes once the images have been pulled. Containers and networks created by the test are removed afterwards, even when it fails. The app container uses the Docker host's architecture; set `E2E_PLATFORM=linux/amd64` or `linux/arm64` to choose one.
 
-GitHub Actions runs the same test on every push to `master` and on every pull request.
+`./tests/download_test.sh` checks the download helpers offline (release tag from the redirect, checksum lookup and verification).
+
+GitHub Actions runs the end-to-end test on amd64 and arm64 on every push to `master` and on every pull request.
