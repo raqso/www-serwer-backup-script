@@ -9,6 +9,9 @@ LOCAL_BACKUPS_PATH=''
 # WARNING: the folder is mirrored with 'rclone sync' - files in it that are not part of
 # this backup get deleted. Use a dedicated, empty folder, never the remote root ('gdrive:').
 RCLONE_REMOTE_NAME=''
+# Optional upload bandwidth limit, e.g. '10M' (10 MiB/s); empty = unlimited.
+# Any rclone --bwlimit value works, see https://rclone.org/docs/#bwlimit-bandwidth-spec
+RCLONE_BWLIMIT=''
 
 DB_HOST='localhost'
 DB_NAME=''

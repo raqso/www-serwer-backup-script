@@ -110,6 +110,8 @@ fi
 
 export DB_USER DB_PASS DB_HOST DB_NAME
 export DIRECTORY_TO_BACKUP LOCAL_BACKUPS_PATH RCLONE_REMOTE_NAME
+# rclone also reads RCLONE_BWLIMIT from the environment and fails when it is empty.
+if [ -n "$RCLONE_BWLIMIT" ]; then export RCLONE_BWLIMIT; else unset RCLONE_BWLIMIT; fi
 
 # resticprofile creates a new empty repository when none exists locally, and the
 # following 'rclone sync' would then replace the backup history in the cloud with it.

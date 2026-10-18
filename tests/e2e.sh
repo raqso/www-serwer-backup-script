@@ -244,7 +244,8 @@ scenario_unknown_argument_rejected() {
   [ "$rc" = 2 ] || { echo "expected exit code 2, got $rc: $out"; return 1; }
   grep -q 'Unknown argument: --bogus' <<<"$out" || { echo "unknown argument not named: $out"; return 1; }
   grep -q 'Usage:' <<<"$out" || { echo "no usage: $out"; return 1; }
-  run_backup "--help" | grep -q 'Usage:' || { echo "--help shows no usage"; return 1; }
+  # Not piped into 'grep -q': it may exit before the output ends and fail the run with SIGPIPE (pipefail).
+  grep -q 'Usage:' <<<"$(run_backup "--help")" || { echo "--help shows no usage"; return 1; }
 }
 
 # Cron mails any output, so a successful run without -v must be silent; the output goes to logs/.
@@ -259,8 +260,52 @@ scenario_quiet_success_logs_privately() {
   echo "log: $log"
   [ "$(as_tester "stat -c %a logs $log")" = $'700\n600' ] || { echo "logs/ must be 700 and the log 600"; return 1; }
   as_tester "grep -q 'snapshot .* saved' $log" || { echo "log has no restic output"; return 1; }
-  as_tester "grep -q 'cleaning up repository using retention information' $log" || { echo "retention policy was not applied"; return 1; }
+  # Retention + prune and check cover the whole repository, so they run once per run, not per profile.
+  local count
+  count=$(as_tester "grep -c 'cleaning up repository using retention information' $log")
+  [ "$count" = 1 ] || { echo "retention ran $count times, expected 1"; return 1; }
+  count=$(as_tester "grep -c 'checking repository consistency' $log")
+  [ "$count" = 1 ] || { echo "check ran $count times, expected 1"; return 1; }
+  # Retention must keep the snapshots this run just made (the latest db and www ones).
+  local id saved snapshots
+  saved=$(as_tester "sed -n 's/.*snapshot \([0-9a-f]*\) saved.*/\1/p' $log")
+  [ "$(grep -c . <<<"$saved")" = 2 ] || { echo "expected 2 new snapshots in the log, got: $saved"; return 1; }
+  snapshots=$(as_tester "$RESTIC -r $LOCAL_REPO snapshots --json") || return 1
+  for id in $saved; do
+    grep -q "\"short_id\":\"$id\"" <<<"$snapshots" || { echo "snapshot $id of this run was removed"; return 1; }
+  done
   as_tester "test ! -e /tmp/rclone.log" || { echo "/tmp/rclone.log was written"; return 1; }
+}
+
+# The restic commands resticprofile generates: low priority, default compression, and the
+# repository-wide forget/prune/check once, in 'www', without a --path filter.
+scenario_generated_commands() {
+  local out
+  out=$(as_tester "set -a && . ./config.conf && export PATH=$HOME_DIR/bin:\$PATH && {
+    resticprofile --verbose --dry-run --name database backup && resticprofile --verbose --dry-run --name www backup; } 2>&1") || return 1
+  echo "$out" | grep -E 'dry-run|priority|relative'
+  local rc=0
+  grep -q 'setting process group priority to 15' <<<"$out" || { echo "priority not lowered"; rc=1; }
+  grep -q 'relative "path"' <<<"$out" && { echo "resticprofile warns about relative paths"; rc=1; }
+  grep 'dry-run: .*/restic ' <<<"$out" | grep -v -- '--compression=auto' && { echo "restic command without --compression=auto"; rc=1; }
+  [ "$(grep -c 'dry-run: .*/restic forget .*--prune' <<<"$out")" = 1 ] || { echo "expected one forget --prune"; rc=1; }
+  [ "$(grep -c 'dry-run: .*/restic check ' <<<"$out")" = 1 ] || { echo "expected one check"; rc=1; }
+  grep 'dry-run: .*/restic forget' <<<"$out" | grep -E -- '--path|--tag' && { echo "forget must cover all snapshots"; rc=1; }
+  return "$rc"
+}
+
+scenario_rclone_bwlimit() {
+  local log rc=0
+  write_config "RCLONE_BWLIMIT=''" || return 1
+  run_backup || { echo "backup with empty RCLONE_BWLIMIT failed"; rc=1; }
+  write_config "RCLONE_BWLIMIT='10M'" || return 1
+  run_backup || { echo "backup with RCLONE_BWLIMIT=10M failed"; rc=1; }
+  log=$(as_tester "ls -t logs/backup-*.log | head -n 1") || return 1
+  as_tester "grep 'Starting bandwidth limiter at 10Mi' $log" || { echo "bandwidth limit not applied"; rc=1; }
+  write_config "RCLONE_BWLIMIT='bogus'" || return 1
+  expect_backup_failure "Backup of 'www' failed" || rc=1
+  write_config || return 1
+  return "$rc"
 }
 
 # A run must not start while another one holds the lock, and must not touch the repositories.
@@ -340,6 +385,8 @@ run_scenario scenario_invalid_config_rejected
 run_scenario scenario_missing_local_repo_keeps_cloud_history
 run_scenario scenario_unknown_argument_rejected
 run_scenario scenario_quiet_success_logs_privately
+run_scenario scenario_generated_commands
+run_scenario scenario_rclone_bwlimit
 run_scenario scenario_concurrent_run_rejected
 run_scenario scenario_db_failure_still_backs_up_files
 printf '\n%s' "$SUMMARY"
