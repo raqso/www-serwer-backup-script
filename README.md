@@ -75,6 +75,6 @@ End-to-end tests run the real `installation.sh` and `backup.sh` in Docker, in an
 ./tests/e2e.sh
 ```
 
-Requirements: Docker and network access (the installer downloads restic, resticprofile and rclone). A run takes about two minutes once the images have been pulled. Containers and networks created by the test are removed afterwards, even when it fails.
+Requirements: Docker and network access (the installer downloads restic, resticprofile and rclone). A run takes about a minute once the images have been pulled. Containers and networks created by the test are removed afterwards, even when it fails.
 
 GitHub Actions runs the same test on every push to `master` and on every pull request.
