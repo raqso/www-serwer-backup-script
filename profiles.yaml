@@ -4,18 +4,9 @@ default:
   repository: $LOCAL_BACKUPS_PATH
   initialize: true
   password-file: ./password-file
-  compression: max
-
-  backup:
-    check-after: true
-
-  retention:
-    # Without this, version 1 of the resticprofile config never applies the policy below.
-    after-backup: true
-    keep-daily: 7
-    keep-weekly: 4
-    keep-monthly: 12
-    prune: true
+  # restic's default; 'max' costs much more CPU for a slightly smaller repository.
+  # Only affects newly written data.
+  compression: auto
 
 database:
   inherit: default
@@ -44,4 +35,17 @@ www:
       - "$DIRECTORY_TO_BACKUP/img/**/*_default.jpg"
     tag:
       - www
-    run-after: rclone sync "$LOCAL_BACKUPS_PATH" "$RCLONE_REMOTE_NAME" --log-level INFO
+
+# Repository-wide work, run once by backup.sh after both backups ('forget', then 'check').
+maintenance:
+  inherit: default
+  initialize: false
+
+  # No --path or --tag filter: covers the database and www snapshots. restic groups
+  # snapshots by host and paths, so the two are kept separately and the latest
+  # snapshot of each is always kept.
+  forget:
+    keep-daily: 7
+    keep-weekly: 4
+    keep-monthly: 12
+    prune: true

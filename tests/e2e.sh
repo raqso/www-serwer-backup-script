@@ -133,6 +133,20 @@ expect_backup_failure() {
 # Checksums of every file in the local and cloud repositories.
 repos_fingerprint() { as_tester "cd $HOME_DIR && find backups cloud -type f -print0 2>/dev/null | sort -z | xargs -0 sha256sum"; }
 
+list_logs() { as_tester "ls logs 2>/dev/null"; }
+
+# new_log <list_logs output from before>: the log files written since then.
+new_log() { comm -13 <(echo "$1") <(list_logs) | sed 's|^|logs/|'; }
+
+# maintenance_ran <log>: forget --prune and check ran exactly once in that run.
+maintenance_ran() {
+  local step count
+  for step in forget check; do
+    count=$(as_tester "grep -c \"profile 'maintenance': starting '$step'\" $1")
+    [ "$count" = 1 ] || { echo "$step ran $count times in $1, expected 1"; return 1; }
+  done
+}
+
 snapshot_ids() { as_tester "$RESTIC -r $1 snapshots --json" | grep -o '"id":"[^"]*"' | sort; }
 
 scenario_backup() {
@@ -221,7 +235,8 @@ scenario_invalid_remote_name_rejected() {
 }
 
 scenario_invalid_config_rejected() {
-  local rc=0 var
+  local rc=0 var logs_before
+  logs_before=$(list_logs)
   for var in DIRECTORY_TO_BACKUP LOCAL_BACKUPS_PATH DB_NAME DB_USER; do
     write_config "$var=''" || return 1
     expect_backup_failure "$var is not set" || rc=1
@@ -234,6 +249,8 @@ scenario_invalid_config_rejected() {
   expect_backup_failure "No configuration file" || rc=1
   as_tester "mv config.conf.bak config.conf" || return 1
   write_config || return 1
+  # Runs started within the same second must not share (and truncate) a log file.
+  [ "$(new_log "$logs_before" | grep -c .)" = 7 ] || { echo "expected 7 new log files"; rc=1; }
   return "$rc"
 }
 
@@ -244,23 +261,118 @@ scenario_unknown_argument_rejected() {
   [ "$rc" = 2 ] || { echo "expected exit code 2, got $rc: $out"; return 1; }
   grep -q 'Unknown argument: --bogus' <<<"$out" || { echo "unknown argument not named: $out"; return 1; }
   grep -q 'Usage:' <<<"$out" || { echo "no usage: $out"; return 1; }
-  run_backup "--help" | grep -q 'Usage:' || { echo "--help shows no usage"; return 1; }
+  # Not piped into 'grep -q': it may exit before the output ends and fail the run with SIGPIPE (pipefail).
+  grep -q 'Usage:' <<<"$(run_backup "--help")" || { echo "--help shows no usage"; return 1; }
 }
 
 # Cron mails any output, so a successful run without -v must be silent; the output goes to logs/.
 scenario_quiet_success_logs_privately() {
   local out err
   as_tester "test ! -e /tmp/rclone.log" || { echo "/tmp/rclone.log exists before the run"; return 1; }
+  local logs_before
+  logs_before=$(list_logs)
   out=$(run_backup "2>$HOME_DIR/stderr") || { echo "backup.sh failed"; as_tester "cat $HOME_DIR/stderr"; return 1; }
   err=$(as_tester "cat $HOME_DIR/stderr; rm $HOME_DIR/stderr")
   [ -z "$out$err" ] || { echo "expected no output, got stdout: '$out' stderr: '$err'"; return 1; }
   local log
-  log=$(as_tester "ls -t logs/backup-*.log | head -n 1") || return 1
+  log=$(new_log "$logs_before")
   echo "log: $log"
+  [ "$(grep -c . <<<"$log")" = 1 ] || { echo "expected one new log file"; return 1; }
   [ "$(as_tester "stat -c %a logs $log")" = $'700\n600' ] || { echo "logs/ must be 700 and the log 600"; return 1; }
   as_tester "grep -q 'snapshot .* saved' $log" || { echo "log has no restic output"; return 1; }
-  as_tester "grep -q 'cleaning up repository using retention information' $log" || { echo "retention policy was not applied"; return 1; }
+  # forget --prune and check cover the whole repository, so they run once per run, not per profile.
+  maintenance_ran "$log" || return 1
+  # Retention must keep the snapshots this run just made (the latest db and www ones).
+  local id saved snapshots
+  saved=$(as_tester "sed -n 's/.*snapshot \([0-9a-f]*\) saved.*/\1/p' $log")
+  [ "$(grep -c . <<<"$saved")" = 2 ] || { echo "expected 2 new snapshots in the log, got: $saved"; return 1; }
+  snapshots=$(as_tester "$RESTIC -r $LOCAL_REPO snapshots --json") || return 1
+  for id in $saved; do
+    grep -q "\"short_id\":\"$id\"" <<<"$snapshots" || { echo "snapshot $id of this run was removed"; return 1; }
+  done
   as_tester "test ! -e /tmp/rclone.log" || { echo "/tmp/rclone.log was written"; return 1; }
+}
+
+# The commands resticprofile generates for the steps of backup.sh: default compression, and
+# the repository-wide forget --prune without a --path filter.
+scenario_generated_commands() {
+  local out
+  out=$(as_tester "set -a && . ./config.conf && export PATH=$HOME_DIR/bin:\$PATH && {
+    resticprofile --dry-run --name database backup && resticprofile --dry-run --name www backup &&
+    resticprofile --dry-run --name maintenance forget && resticprofile --dry-run --name maintenance check; } 2>&1") || return 1
+  echo "$out" | grep -E 'dry-run|relative'
+  local rc=0
+  grep -q 'relative "path"' <<<"$out" && { echo "resticprofile warns about relative paths"; rc=1; }
+  grep 'dry-run: .*/restic ' <<<"$out" | grep -v -- '--compression=auto' && { echo "restic command without --compression=auto"; rc=1; }
+  [ "$(grep -c 'dry-run: .*/restic forget .*--prune' <<<"$out")" = 1 ] || { echo "expected one forget --prune"; rc=1; }
+  [ "$(grep -c 'dry-run: .*/restic check ' <<<"$out")" = 1 ] || { echo "expected one check"; rc=1; }
+  grep 'dry-run: .*/restic forget' <<<"$out" | grep -E -- '--path|--tag' && { echo "forget must cover all snapshots"; rc=1; }
+  return "$rc"
+}
+
+scenario_rclone_bwlimit() {
+  local log logs_before before value rc=0
+  write_config "RCLONE_BWLIMIT=''" || return 1
+  run_backup || { echo "backup with empty RCLONE_BWLIMIT failed"; rc=1; }
+  write_config "RCLONE_BWLIMIT='10M'" || return 1
+  logs_before=$(list_logs)
+  run_backup || { echo "backup with RCLONE_BWLIMIT=10M failed"; rc=1; }
+  log=$(new_log "$logs_before")
+  as_tester "grep 'Starting bandwidth limiter at 10Mi' $log" || { echo "bandwidth limit not applied"; rc=1; }
+  # An invalid value is rejected before anything is backed up.
+  before=$(repos_fingerprint) || return 1
+  for value in bogus '10 M'; do
+    write_config "RCLONE_BWLIMIT='$value'" || return 1
+    expect_backup_failure "RCLONE_BWLIMIT is not a valid" || rc=1
+  done
+  [ "$(repos_fingerprint)" = "$before" ] || { echo "repositories changed"; rc=1; }
+  write_config || return 1
+  return "$rc"
+}
+
+# nice applies to the backup commands only, not to the shell that started backup.sh
+# (a process group renice would also slow down whatever that shell runs next).
+scenario_low_priority() {
+  local out rc=0
+  # mysqldump is started by resticprofile like restic, so it shows their priority.
+  as_tester "mkdir -p $HOME_DIR/shim && printf '#!/bin/sh\nnice >$HOME_DIR/dump.nice\nexec /usr/bin/mysqldump \"\$@\"\n' >$HOME_DIR/shim/mysqldump && chmod +x $HOME_DIR/shim/mysqldump" || return 1
+  out=$(TEST_PATH="$HOME_DIR/shim:/usr/bin:/bin" run_backup "&& nice") || { echo "backup.sh failed"; rc=1; }
+  [ "$out" = 0 ] || { echo "calling shell runs at nice '$out', expected 0"; rc=1; }
+  out=$(as_tester "cat $HOME_DIR/dump.nice")
+  [ "$out" = 15 ] || { echo "mysqldump ran at nice '$out', expected 15"; rc=1; }
+  as_tester "rm -r $HOME_DIR/shim $HOME_DIR/dump.nice"
+  return "$rc"
+}
+
+# A failing files backup must not stop the retention policy (or the repository would grow
+# until the quota is full) nor the upload of the database backup.
+scenario_www_failure_still_maintained_and_uploaded() {
+  local db_before db_after err log rc=0
+  db_before=$(as_tester "$RESTIC -r $CLOUD_REPO snapshots --tag db --json" | grep -o '"id":"[^"]*"' | sort) || return 1
+  as_tester "chmod 000 $WWW_DIR/css" || return 1
+  err=$(expect_backup_failure "ERROR: Backup of 'www' failed") || rc=1
+  as_tester "chmod 755 $WWW_DIR/css" || return 1
+  echo "$err"
+  grep -q "ERROR: Backup failed for: www$" <<<"$err" || { echo "no final ERROR line"; rc=1; }
+  log=$(sed -n 's/.*(full log: \(.*\)):$/\1/p' <<<"$err" | head -n 1)
+  maintenance_ran "$log" || rc=1
+  db_after=$(as_tester "$RESTIC -r $CLOUD_REPO snapshots --tag db --json" | grep -o '"id":"[^"]*"' | sort) || return 1
+  [ -n "$(comm -13 <(echo "$db_before") <(echo "$db_after"))" ] || { echo "no new db snapshot in cloud"; rc=1; }
+  return "$rc"
+}
+
+# A damaged local repository must not be mirrored over the copy in the cloud.
+scenario_damaged_repo_not_uploaded() {
+  local before rc=0
+  before=$(repos_fingerprint | grep ' cloud/') || return 1
+  # Damage every pack, so it does not matter which ones prune would remove anyway.
+  as_tester "cp -a $LOCAL_REPO/data $HOME_DIR/data.bak && chmod -R u+w $LOCAL_REPO/data &&
+    find $LOCAL_REPO/data -type f -exec truncate -s -10 {} +" || return 1
+  expect_backup_failure "ERROR: Not uploading to $CLOUD_REPO" || rc=1
+  as_tester "cp -a $HOME_DIR/data.bak/. $LOCAL_REPO/data/ && rm -rf $HOME_DIR/data.bak" || return 1
+  [ "$(repos_fingerprint | grep ' cloud/')" = "$before" ] || { echo "cloud copy changed"; rc=1; }
+  run_backup || { echo "backup after repairing the repository failed"; rc=1; }
+  return "$rc"
 }
 
 # A run must not start while another one holds the lock, and must not touch the repositories.
@@ -340,8 +452,13 @@ run_scenario scenario_invalid_config_rejected
 run_scenario scenario_missing_local_repo_keeps_cloud_history
 run_scenario scenario_unknown_argument_rejected
 run_scenario scenario_quiet_success_logs_privately
+run_scenario scenario_generated_commands
+run_scenario scenario_rclone_bwlimit
+run_scenario scenario_low_priority
 run_scenario scenario_concurrent_run_rejected
 run_scenario scenario_db_failure_still_backs_up_files
+run_scenario scenario_www_failure_still_maintained_and_uploaded
+run_scenario scenario_damaged_repo_not_uploaded
 printf '\n%s' "$SUMMARY"
 echo "Finished in $((SECONDS - START))s"
 exit "$FAILED"
