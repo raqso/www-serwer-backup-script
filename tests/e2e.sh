@@ -90,18 +90,19 @@ SQL
 # Installer run from a login shell, like a user over SSH.
 install_as_tester() { docker exec -u tester -w "$APP_DIR" "$APP" bash -lc './installation.sh'; }
 
-# Known bug: on the first run ~/bin is not on PATH yet (`source ~/.bashrc` is a
-# no-op in a non-interactive shell), so `resticprofile generate` fails and
-# password-file is left empty while the installer still reports success.
 scenario_first_install_generates_password_file() {
   install_as_tester || return 1
   as_tester "test -s password-file" || { echo "password-file is empty"; return 1; }
+  local modes
+  modes=$(as_tester "stat -c '%n %a' password-file config.conf") || return 1
+  [ "$modes" = $'password-file 600\nconfig.conf 600' ] || { echo "expected mode 600, got: $modes"; return 1; }
+  local tool
+  for tool in restic resticprofile rclone; do
+    as_tester "$HOME_DIR/bin/$tool version >/dev/null" || { echo "$tool not runnable from ~/bin"; return 1; }
+  done
 }
 
-scenario_install_and_backup() {
-  # Fresh login: ~/bin now exists, so ~/.profile puts it on PATH.
-  install_as_tester || return 1
-  as_tester "test -s password-file" || { echo "password-file is empty"; return 1; }
+scenario_backup() {
   as_tester "cat > config.conf <<EOF
 DIRECTORY_TO_BACKUP='$WWW_DIR'
 LOCAL_BACKUPS_PATH='$LOCAL_REPO'
@@ -115,6 +116,18 @@ EOF" || return 1
   as_tester "env -i HOME=$HOME_DIR PATH=/usr/bin:/bin bash backup.sh --verbose" || return 1
   as_tester "$RESTIC -r $LOCAL_REPO snapshots --tag db --json | grep -q '\"id\"'" || { echo "no db snapshot"; return 1; }
   as_tester "$RESTIC -r $LOCAL_REPO snapshots --tag www --json | grep -q '\"id\"'" || { echo "no www snapshot"; return 1; }
+}
+
+# Re-running the installer (e.g. to update the tools) must keep the key and the filled-in config.
+scenario_reinstall_keeps_password_and_config() {
+  local before after
+  before=$(as_tester "sha256sum password-file config.conf") || return 1
+  install_as_tester || return 1
+  after=$(as_tester "sha256sum password-file config.conf") || return 1
+  [ "$before" = "$after" ] || { echo "password-file or config.conf changed"; return 1; }
+  local count
+  count=$(as_tester "grep -cxF 'export PATH=\$HOME/bin:\$PATH' ~/.bashrc")
+  [ "$count" = 1 ] || { echo "PATH line found $count times in ~/.bashrc, expected 1"; return 1; }
 }
 
 scenario_cloud_copy_is_valid_repo() {
@@ -163,8 +176,9 @@ run_scenario() {
 
 START=$SECONDS
 setup || { echo "FAIL: setup"; exit 1; }
-run_scenario scenario_first_install_generates_password_file known-bug
-run_scenario scenario_install_and_backup
+run_scenario scenario_first_install_generates_password_file
+run_scenario scenario_backup
+run_scenario scenario_reinstall_keeps_password_and_config
 run_scenario scenario_cloud_copy_is_valid_repo
 run_scenario scenario_restore_from_cloud
 printf '\n%s' "$SUMMARY"
