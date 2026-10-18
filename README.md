@@ -27,10 +27,10 @@ Not backed up by default: `cache`, `log`, `tmp`, `img/tmp` and `img/**/*_default
 
 ## Initial configuration
 
-1. Get the code at a release tag. The latest release is listed at https://github.com/raqso/www-serwer-backup-script/releases, use its tag instead of `v0.2.0` below.
+1. Get the code at a release tag. The latest release is listed at https://github.com/raqso/www-serwer-backup-script/releases, use its tag instead of `v0.3.0` below.
 
 ```bash
-git clone --branch v0.2.0 https://github.com/raqso/www-serwer-backup-script.git
+git clone --branch v0.3.0 https://github.com/raqso/www-serwer-backup-script.git
 cd www-serwer-backup-script
 ```
 
